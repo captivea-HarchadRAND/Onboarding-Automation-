@@ -1,0 +1,25 @@
+# Dépendances
+node_modules/
+
+# Base de données SQLite (données sensibles)
+backend/data/
+
+# Secrets & configuration locale
+backend/.env
+.env
+.env.local
+.env.*.local
+
+# Logs
+backend/onboarding.log
+*.log
+
+# Build frontend
+frontend/dist/
+
+# Config locale Claude Code
+.claude/
+
+# Système
+.DS_Store
+Thumbs.db
