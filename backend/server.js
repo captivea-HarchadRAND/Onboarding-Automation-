@@ -1,6 +1,7 @@
-const express = require('express');
-const helmet = require('helmet');
-const cors = require('cors');
+const express   = require('express');
+const helmet    = require('helmet');
+const cors      = require('cors');
+const rateLimit = require('express-rate-limit');
 const cookieParser = require('cookie-parser');
 const { v4: uuidv4 } = require('uuid');
 const { scrypt, randomBytes, timingSafeEqual } = require('crypto');
@@ -72,7 +73,20 @@ const ALLOWED_ORIGINS = [
 ];
 
 app.set('trust proxy', 1);
-app.use(helmet({ contentSecurityPolicy: false }));
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc:  ["'self'"],
+      styleSrc:   ["'self'", "'unsafe-inline'"],
+      imgSrc:     ["'self'", "data:", "blob:"],
+      connectSrc: ["'self'"],
+      fontSrc:    ["'self'"],
+      objectSrc:  ["'none'"],
+      frameSrc:   ["'none'"],
+    },
+  },
+}));
 app.use(cors({ origin: ALLOWED_ORIGINS, credentials: true }));
 app.use(express.json({ limit: '512kb' }));
 app.use(cookieParser());
@@ -175,7 +189,15 @@ function countActiveAdmins(db, exceptId = null) {
 
 // ─── Auth routes ──────────────────────────────────────────────────────────────
 
-app.post('/api/auth/login', async (req, res) => {
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Trop de tentatives. Réessayez dans 15 minutes.' },
+});
+
+app.post('/api/auth/login', authLimiter, async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Email et mot de passe requis' });
   const db = await getDB();
@@ -220,12 +242,15 @@ app.post('/api/auth/verify-password', auth, async (req, res) => {
 });
 
 // Vérification du mot de passe de lancement IT (uniquement via .env — non modifiable via UI)
-app.post('/api/auth/verify-launch-password', auth, async (req, res) => {
+app.post('/api/auth/verify-launch-password', auth, authLimiter, async (req, res) => {
   const { password } = req.body;
   if (!password) return res.status(400).json({ error: 'Mot de passe requis' });
   const launchPassword = process.env.LAUNCH_PASSWORD;
-  if (!launchPassword) return res.status(500).json({ error: 'Code de confirmation IT non configuré (variable LAUNCH_PASSWORD dans .env)' });
-  if (password !== launchPassword) return res.status(401).json({ error: 'Code de confirmation incorrect' });
+  if (!launchPassword) return res.status(500).json({ error: 'Code de confirmation IT non configuré' });
+  const pwBuf = Buffer.from(password);
+  const lpBuf = Buffer.from(launchPassword);
+  if (pwBuf.length !== lpBuf.length || !timingSafeEqual(pwBuf, lpBuf))
+    return res.status(401).json({ error: 'Code de confirmation incorrect' });
   res.json({ ok: true });
 });
 
@@ -266,7 +291,8 @@ app.get('/api/graph/groups', auth, async (req, res) => {
     const groups = await listGroups(search);
     res.json(groups);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('[Graph] listGroups:', err.message);
+    res.status(500).json({ error: 'Erreur lors de la récupération des groupes' });
   }
 });
 
@@ -275,7 +301,8 @@ app.get('/api/graph/groups/:id', auth, async (req, res) => {
     const group = await getGroupById(req.params.id);
     res.json(group);
   } catch (err) {
-    res.status(err.graphStatus === 404 ? 404 : 500).json({ error: err.message });
+    console.error('[Graph] getGroupById:', err.message);
+    res.status(err.graphStatus === 404 ? 404 : 500).json({ error: err.graphStatus === 404 ? 'Groupe introuvable' : 'Erreur lors de la récupération du groupe' });
   }
 });
 
@@ -284,7 +311,8 @@ app.get('/api/graph/licenses', auth, async (req, res) => {
     const licenses = await listAvailableLicenses();
     res.json(licenses);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('[Graph] listLicenses:', err.message);
+    res.status(500).json({ error: 'Erreur lors de la récupération des licences' });
   }
 });
 
@@ -460,8 +488,12 @@ app.post('/api/onboardings', auth, async (req, res) => {
     return res.status(400).json({ error: 'Prénom et nom requis' });
   if (!groupId || !groupName)
     return res.status(400).json({ error: 'Groupe requis' });
+  if (!isValidUUID(groupId))
+    return res.status(400).json({ error: 'Identifiant de groupe invalide' });
   if (!skuId || !licenseName)
     return res.status(400).json({ error: 'Licence requise' });
+  if (!isValidUUID(skuId))
+    return res.status(400).json({ error: 'Identifiant de licence invalide' });
 
   const domain = process.env.DEFAULT_DOMAIN || 'monentreprise.com';
   const slug = `${firstName}.${lastName}`
@@ -649,6 +681,9 @@ app.put('/api/admin/users/:id', auth, requireRole('admin'), async (req, res) => 
     `UPDATE users SET name=COALESCE(?,name), email=COALESCE(?,email), role=COALESCE(?,role), status=COALESCE(?,status) WHERE id=?`,
     [name ?? null, email?.toLowerCase() ?? null, role ?? null, status ?? null, req.params.id]
   );
+  // Invalider les sessions actives si rôle ou statut modifié
+  if (role != null || status != null)
+    db.run(`DELETE FROM sessions WHERE user_id=?`, [req.params.id]);
   saveDB();
   res.json(dbRow(db, `SELECT id, name, email, role, status FROM users WHERE id=?`, [req.params.id]));
 });

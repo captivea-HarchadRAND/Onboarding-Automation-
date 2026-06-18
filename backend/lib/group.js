@@ -1,7 +1,9 @@
 const { graphFetch } = require('./graph');
 
 async function listGroups(search = '') {
-  const term = search ? `SP ${search}` : 'SP -';
+  // Sanitisation : retirer les guillemets et caractères spéciaux OData pour éviter l'injection de requête
+  const safe = search.replace(/["$&+,/:;=?@<>{}|\\^~[\]`]/g, '').trim();
+  const term = safe ? `SP ${safe}` : 'SP -';
   const data = await graphFetch(
     `/groups?$search="displayName:${term}"&$select=id,displayName,description,securityEnabled,mailEnabled&$top=200&$count=true`,
     {},

@@ -22,10 +22,11 @@ function generatePassword(length = 16) {
   const rest = Array.from({ length: length - 4 }, () => pick(ALL));
   const chars = [...mandatory, ...rest];
 
-  // Fisher-Yates shuffle avec bytes crypto
-  const shuffle = randomBytes(chars.length);
+  // Fisher-Yates shuffle sans biais modulo (rejet des bytes hors plage uniforme)
   for (let i = chars.length - 1; i > 0; i--) {
-    const j = shuffle[i] % (i + 1);
+    let b;
+    do { b = randomBytes(1)[0]; } while (b >= 256 - (256 % (i + 1)));
+    const j = b % (i + 1);
     [chars[i], chars[j]] = [chars[j], chars[i]];
   }
   return chars.join('');
