@@ -99,7 +99,10 @@ function migrate(db) {
     `ALTER TABLE onboardings ADD COLUMN job_role TEXT;
      ALTER TABLE onboardings ADD COLUMN location TEXT;`,
 
-    // v3: mot de passe temporaire généré à la création
+    // v3: colonne historique — NE PAS UTILISER. Le mot de passe temporaire ne doit JAMAIS
+    // être persisté en DB : il vit uniquement en mémoire (tempPasswordStore, TTL 10 min)
+    // et n'est renvoyé qu'une fois à son créateur. Colonne conservée pour ne pas casser
+    // la séquence de migrations ; toute écriture ici romprait l'invariant de sécurité.
     `ALTER TABLE onboardings ADD COLUMN temp_password TEXT;`,
   ];
 

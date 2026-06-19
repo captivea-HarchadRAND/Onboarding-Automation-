@@ -45,7 +45,7 @@ async function listAvailableLicenses() {
 }
 
 async function assignLicense(userId, skuId) {
-  return graphFetch(`/users/${userId}/assignLicense`, {
+  return graphFetch(`/users/${encodeURIComponent(userId)}/assignLicense`, {
     method: 'POST',
     body: {
       addLicenses: [{ skuId, disabledPlans: [] }],

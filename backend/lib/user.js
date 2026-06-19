@@ -46,7 +46,8 @@ const LOCATION_TO_ISO = {
 async function createUser({ firstName, lastName, email, location }) {
   const domain        = process.env.DEFAULT_DOMAIN    || 'monentreprise.com';
   const usageLocation = LOCATION_TO_ISO[location] || process.env.USAGE_LOCATION || 'FR';
-  const forceChange   = process.env.FORCE_CHANGE_PASSWORD === 'true';
+  // Sécurité par défaut : changement forcé à la 1re connexion, sauf désactivation explicite
+  const forceChange   = process.env.FORCE_CHANGE_PASSWORD !== 'false';
   const password      = generatePassword(16);
 
   const slug = `${firstName}.${lastName}`
@@ -77,7 +78,7 @@ async function createUser({ firstName, lastName, email, location }) {
 }
 
 async function deleteUser(userId) {
-  return graphFetch(`/users/${userId}`, { method: 'DELETE' });
+  return graphFetch(`/users/${encodeURIComponent(userId)}`, { method: 'DELETE' });
 }
 
 module.exports = { createUser, deleteUser, generatePassword };

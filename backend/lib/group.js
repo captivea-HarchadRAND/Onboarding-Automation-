@@ -1,8 +1,9 @@
 const { graphFetch } = require('./graph');
 
 async function listGroups(search = '') {
-  // Sanitisation : retirer les guillemets et caractères spéciaux OData pour éviter l'injection de requête
-  const safe = search.replace(/["$&+,/:;=?@<>{}|\\^~[\]`]/g, '').trim();
+  // Sanitisation par liste blanche (plus robuste qu'une denylist) : on ne garde que
+  // lettres, chiffres, espace, point et tiret — neutralise toute syntaxe OData/URL.
+  const safe = [...String(search)].filter(c => /[\p{L}\p{N} .\-]/u.test(c)).join('').slice(0, 128).trim();
   const term = safe ? `SP ${safe}` : 'SP -';
   const data = await graphFetch(
     `/groups?$search="displayName:${term}"&$select=id,displayName,description,securityEnabled,mailEnabled&$top=200&$count=true`,
@@ -15,16 +16,16 @@ async function listGroups(search = '') {
 }
 
 async function addMemberToGroup(groupId, userId) {
-  return graphFetch(`/groups/${groupId}/members/$ref`, {
+  return graphFetch(`/groups/${encodeURIComponent(groupId)}/members/$ref`, {
     method: 'POST',
     body: {
-      '@odata.id': `https://graph.microsoft.com/v1.0/directoryObjects/${userId}`,
+      '@odata.id': `https://graph.microsoft.com/v1.0/directoryObjects/${encodeURIComponent(userId)}`,
     },
   });
 }
 
 async function getGroupById(id) {
-  return graphFetch(`/groups/${id}?$select=id,displayName`);
+  return graphFetch(`/groups/${encodeURIComponent(id)}?$select=id,displayName`);
 }
 
 module.exports = { listGroups, addMemberToGroup, getGroupById };

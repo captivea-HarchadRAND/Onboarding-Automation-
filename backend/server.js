@@ -4,7 +4,7 @@ const cors      = require('cors');
 const rateLimit = require('express-rate-limit');
 const cookieParser = require('cookie-parser');
 const { v4: uuidv4 } = require('uuid');
-const { scrypt, randomBytes, timingSafeEqual } = require('crypto');
+const { scrypt, randomBytes, timingSafeEqual, createHash } = require('crypto');
 const { promisify } = require('util');
 const path = require('path');
 const fs = require('fs');
@@ -58,6 +58,10 @@ const { listGroups, addMemberToGroup, getGroupById, listAvailableLicenses, assig
 const scryptAsync = promisify(scrypt);
 const app = express();
 const PORT = process.env.PORT || 8081;
+// En production, FRONTEND_URL doit être explicite — sinon le repli localhost serait une origine de confiance CORS
+if (process.env.NODE_ENV === 'production' && !process.env.FRONTEND_URL) {
+  throw new Error('FRONTEND_URL doit être défini explicitement en production (origine CORS de confiance).');
+}
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5174';
 const SESSION_TTL_DAYS = 14;
 const INVITE_TTL_DAYS = 7;
@@ -68,11 +72,13 @@ const DIST = path.join(__dirname, '../frontend/dist');
 const ALLOWED_ORIGINS = [
   ...FRONTEND_URL.split(',').map(u => u.trim()),
   ...(process.env.NODE_ENV !== 'production'
-    ? ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:8081']
+    ? ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:5175', 'http://localhost:8081']
     : []),
 ];
 
-app.set('trust proxy', 1);
+// Ne faire confiance au proxy QUE si explicitement activé : sinon X-Forwarded-For est
+// forgeable par le client, ce qui contournerait le rate-limiter (clé = req.ip).
+app.set('trust proxy', process.env.TRUST_PROXY === 'true' ? 1 : false);
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -97,25 +103,47 @@ if (fs.existsSync(DIST)) app.use(express.static(DIST));
 
 function logAction(msg) {
   const ts = new Date().toISOString();
-  const line = `[${ts}] ${msg}\n`;
+  // Neutraliser tous les caractères de contrôle (CRLF + séquences ANSI) pour empêcher
+  // la falsification d'entrées de log (log injection)
+  const clean = String(msg).replace(/[\x00-\x1f\x7f]+/g, ' ');
+  const line = `[${ts}] ${clean}\n`;
   process.stdout.write(line);
   try { fs.appendFileSync(LOG_FILE, line); } catch (_) {}
 }
 
+// Paramètre de coût scrypt durci (Node défaut = 2^14). Stocké dans le hash pour
+// permettre la vérification rétro-compatible des anciens hash (format sans coût).
+const SCRYPT_N = 2 ** 15;
+const SCRYPT_MAXMEM = 128 * 1024 * 1024;
+
 async function hashPassword(pw) {
   const salt = randomBytes(16).toString('hex');
-  const buf = await scryptAsync(pw, salt, 64);
-  return `${buf.toString('hex')}.${salt}`;
+  const buf = await scryptAsync(pw, salt, 64, { N: SCRYPT_N, maxmem: SCRYPT_MAXMEM });
+  return `${buf.toString('hex')}.${salt}.${SCRYPT_N}`;
 }
 
 async function verifyPassword(pw, stored) {
   if (typeof stored !== 'string' || !stored.includes('.')) return false;
-  const [hashed, salt] = stored.split('.');
+  const parts = stored.split('.');
+  const [hashed, salt] = parts;
   if (!hashed || !salt) return false;
+  // Coût encodé dans le hash (3e segment) ; absent ou corrompu → ancien format au défaut Node (2^14)
+  const parsedN = parseInt(parts[2], 10);
+  const N = Number.isInteger(parsedN) && parsedN > 1 ? parsedN : 16384;
   const expected = Buffer.from(hashed, 'hex');
-  const buf = await scryptAsync(pw, salt, 64);
+  const buf = await scryptAsync(pw, salt, 64, { N, maxmem: SCRYPT_MAXMEM });
   if (expected.length !== buf.length) return false;
   return timingSafeEqual(buf, expected);
+}
+
+// Normalisation d'email unique (création, édition, login, test de doublon)
+function normalizeEmail(email) {
+  return String(email || '').trim().toLowerCase();
+}
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+function isValidEmail(email) {
+  return typeof email === 'string' && email.length <= 254 && EMAIL_RE.test(email);
 }
 
 function validatePassword(pw) {
@@ -201,7 +229,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Email et mot de passe requis' });
   const db = await getDB();
-  const user = dbRow(db, `SELECT * FROM users WHERE email=? AND status='active'`, [email.toLowerCase().trim()]);
+  const user = dbRow(db, `SELECT * FROM users WHERE email=? AND status='active'`, [normalizeEmail(email)]);
   if (!user || !user.password_hash) return res.status(401).json({ error: 'Identifiants invalides' });
   const ok = await verifyPassword(password, user.password_hash);
   if (!ok) return res.status(401).json({ error: 'Identifiants invalides' });
@@ -230,7 +258,7 @@ app.get('/api/auth/me', auth, async (req, res) => {
   res.json({ user: req.user, mock: MOCK_GRAPH });
 });
 
-app.post('/api/auth/verify-password', auth, async (req, res) => {
+app.post('/api/auth/verify-password', auth, authLimiter, async (req, res) => {
   const { password } = req.body;
   if (!password) return res.status(400).json({ error: 'Mot de passe requis' });
   const db = await getDB();
@@ -247,14 +275,15 @@ app.post('/api/auth/verify-launch-password', auth, authLimiter, async (req, res)
   if (!password) return res.status(400).json({ error: 'Mot de passe requis' });
   const launchPassword = process.env.LAUNCH_PASSWORD;
   if (!launchPassword) return res.status(500).json({ error: 'Code de confirmation IT non configuré' });
-  const pwBuf = Buffer.from(password);
-  const lpBuf = Buffer.from(launchPassword);
-  if (pwBuf.length !== lpBuf.length || !timingSafeEqual(pwBuf, lpBuf))
+  // Comparaison sur empreintes SHA-256 de taille fixe : ni la longueur ni le contenu ne fuient via le timing
+  const digest = (s) => createHash('sha256').update(String(s)).digest();
+  if (!timingSafeEqual(digest(password), digest(launchPassword)))
     return res.status(401).json({ error: 'Code de confirmation incorrect' });
   res.json({ ok: true });
 });
 
-app.get('/api/auth/invite/:token', async (req, res) => {
+app.get('/api/auth/invite/:token', authLimiter, async (req, res) => {
+  if (!isValidUUID(req.params.token)) return res.status(404).json({ error: 'Invitation invalide ou expirée' });
   const db = await getDB();
   const user = dbRow(db,
     `SELECT id, name, email FROM users WHERE invite_token=? AND (invite_expires IS NULL OR invite_expires > datetime('now'))`,
@@ -263,7 +292,8 @@ app.get('/api/auth/invite/:token', async (req, res) => {
   res.json({ user });
 });
 
-app.post('/api/auth/invite/:token', async (req, res) => {
+app.post('/api/auth/invite/:token', authLimiter, async (req, res) => {
+  if (!isValidUUID(req.params.token)) return res.status(404).json({ error: 'Invitation invalide ou expirée' });
   const { password } = req.body;
   const pwErr = validatePassword(password);
   if (pwErr) return res.status(400).json({ error: pwErr });
@@ -271,7 +301,11 @@ app.post('/api/auth/invite/:token', async (req, res) => {
   const user = dbRow(db,
     `SELECT id, name, email, role FROM users WHERE invite_token=? AND (invite_expires IS NULL OR invite_expires > datetime('now'))`,
     [req.params.token]);
-  if (!user) return res.status(404).json({ error: 'Invitation invalide ou expirée' });
+  if (!user) {
+    logAction(`Tentative d'acceptation d'invitation avec token invalide/expiré`);
+    return res.status(404).json({ error: 'Invitation invalide ou expirée' });
+  }
+  logAction(`Invitation acceptée par ${user.email} (activation de compte)`);
   const hash = await hashPassword(password);
   db.run(`UPDATE users SET password_hash=?, invite_token=NULL, invite_expires=NULL, status='active' WHERE id=?`, [hash, user.id]);
   saveDB();
@@ -426,6 +460,8 @@ async function executeOnboarding(id) {
 
   } catch (err) {
     logAction(`[${id}] ❌ Erreur : ${err.message}`);
+    // Message générique stocké/affiché — le détail Graph (peut contenir des IDs internes) reste dans les logs serveur
+    const safeMsg = "Échec de l'opération Microsoft 365 — voir les logs serveur pour le détail technique.";
 
     if (adUserId) {
       try {
@@ -442,11 +478,11 @@ async function executeOnboarding(id) {
     db.run(
       `UPDATE onboarding_steps SET status='failed', error_message=?, completed_at=datetime('now')
        WHERE onboarding_id=? AND status='running'`,
-      [err.message, id]
+      [safeMsg, id]
     );
     db.run(
       `UPDATE onboardings SET status='failed', error_message=? WHERE id=?`,
-      [err.message, id]
+      [safeMsg, id]
     );
     saveDB();
   }
@@ -476,9 +512,16 @@ app.get('/api/onboardings/:id', auth, async (req, res) => {
   const steps = dbRows(db,
     `SELECT * FROM onboarding_steps WHERE onboarding_id=? ORDER BY step_number`,
     [req.params.id]);
-  // Mot de passe retourné une seule fois depuis la mémoire, puis effacé définitivement
-  const temp_password = tempPasswordStore.get(req.params.id) || null;
-  if (temp_password) tempPasswordStore.delete(req.params.id);
+  // Défense en profondeur : la colonne DB temp_password doit toujours être NULL (cf. db.js).
+  // On la retire explicitement pour ne pas dépendre de l'ordre du spread ci-dessous.
+  delete onb.temp_password;
+  // Mot de passe retourné une seule fois — UNIQUEMENT au créateur de l'onboarding
+  // (empêche un autre opérateur de capter le mot de passe M365 via l'ID exposé dans la liste)
+  let temp_password = null;
+  if (onb.created_by === req.user.id) {
+    temp_password = tempPasswordStore.get(req.params.id) || null;
+    if (temp_password) tempPasswordStore.delete(req.params.id);
+  }
   res.json({ ...onb, temp_password, steps });
 });
 
@@ -486,13 +529,21 @@ app.post('/api/onboardings', auth, async (req, res) => {
   const { firstName, lastName, email, jobRole, location, groupId, groupName, skuId, licenseName } = req.body;
   if (!firstName?.trim() || !lastName?.trim())
     return res.status(400).json({ error: 'Prénom et nom requis' });
+  // Limites de longueur (anti-DoS mémoire sql.js + cohérence Graph)
+  const tooLong = (s, n) => typeof s === 'string' && s.length > n;
+  if (tooLong(firstName, 64) || tooLong(lastName, 64) || tooLong(jobRole, 64) || tooLong(location, 64))
+    return res.status(400).json({ error: 'Champ trop long (max 64 caractères)' });
+  if (tooLong(groupName, 256) || tooLong(licenseName, 256))
+    return res.status(400).json({ error: 'Nom de groupe/licence trop long' });
   if (!groupId || !groupName)
     return res.status(400).json({ error: 'Groupe requis' });
-  if (!isValidUUID(groupId))
-    return res.status(400).json({ error: 'Identifiant de groupe invalide' });
   if (!skuId || !licenseName)
     return res.status(400).json({ error: 'Licence requise' });
-  if (!isValidUUID(skuId))
+  // En production, groupId/skuId sont des GUID Azure ; en mode mock les IDs sont préfixés "mock-"
+  const idOk = (v) => isValidUUID(v) || (MOCK_GRAPH && /^mock-[\w-]+$/.test(v));
+  if (!idOk(groupId))
+    return res.status(400).json({ error: 'Identifiant de groupe invalide' });
+  if (!idOk(skuId))
     return res.status(400).json({ error: 'Identifiant de licence invalide' });
 
   const domain = process.env.DEFAULT_DOMAIN || 'monentreprise.com';
@@ -501,7 +552,18 @@ app.post('/api/onboardings', auth, async (req, res) => {
     .normalize('NFD')
     .replace(/[̀-ͯ]/g, '')
     .replace(/[^a-z0-9.]/g, '');
-  const employeeEmail = email?.trim() || `${slug}@${domain}`;
+  if (!slug || slug === '.')
+    return res.status(400).json({ error: 'Prénom/nom invalides (au moins un caractère alphanumérique requis)' });
+  const employeeEmail = normalizeEmail(email) || `${slug}@${domain}`;
+  if (!isValidEmail(employeeEmail))
+    return res.status(400).json({ error: 'Adresse email invalide' });
+  // Restreindre au(x) domaine(s) d'onboarding actif(s) si configuré(s)
+  const parsedDomains = JSON.parse(dbRow(await getDB(), `SELECT value FROM settings WHERE key='onboarding_domains'`)?.value || process.env.ONBOARDING_DOMAINS || '[]');
+  const activeDomains = (Array.isArray(parsedDomains) ? parsedDomains : [])
+    .filter(d => d && d.active && d.domain).map(d => d.domain.toLowerCase());
+  if (activeDomains.length > 0 && !activeDomains.includes(employeeEmail.split('@')[1])) {
+    return res.status(400).json({ error: 'Domaine email non autorisé' });
+  }
 
   const db = await getDB();
   const id = uuidv4();
@@ -577,7 +639,7 @@ app.get('/api/admin/settings', auth, requireRole('admin'), async (req, res) => {
     default_domain:         dbMap.default_domain         || process.env.DEFAULT_DOMAIN       || '',
     usage_location:         dbMap.usage_location         || process.env.USAGE_LOCATION       || 'FR',
     launch_password_set:           !!process.env.LAUNCH_PASSWORD,
-    force_change_password:         dbMap.force_change_password         || process.env.FORCE_CHANGE_PASSWORD || 'false',
+    force_change_password:         dbMap.force_change_password         || process.env.FORCE_CHANGE_PASSWORD || 'true',
     sharepoint_global_groups:  JSON.parse(dbMap.sharepoint_global_groups  || process.env.SP_GLOBAL_GROUPS              || '[]'),
     sharepoint_country_groups: JSON.parse(dbMap.sharepoint_country_groups || process.env.SP_COUNTRY_GROUPS             || '[]'),
     communication_groups:      JSON.parse(dbMap.communication_groups      || process.env.SP_COMMUNICATION_GROUPS       || '[]'),
@@ -590,8 +652,47 @@ app.get('/api/admin/settings', auth, requireRole('admin'), async (req, res) => {
   });
 });
 
+// Validation par clé : listes blanches pour les scalaires, bornes pour les tableaux
+const GROUP_ARRAY_KEYS = new Set([
+  'sharepoint_global_groups', 'sharepoint_country_groups', 'communication_groups',
+  'pointage_assignments', 'pointage_comm_assignments', 'department_assignments',
+]);
+const SCALAR_RULES = {
+  force_change_password: v => v === 'true' || v === 'false',
+  usage_location:        v => /^[A-Za-z]{2}$/.test(v),
+  default_domain:        v => v.length <= 253 && /^(?!-)[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(v),
+  azure_tenant_id:       v => v === '' || isValidUUID(v),
+  azure_client_id:       v => v === '' || isValidUUID(v),
+};
+function validateSettingValue(key, v) {
+  if (Array.isArray(v)) {
+    if (v.length > 500) return 'trop d\'éléments (max 500)';
+    if (GROUP_ARRAY_KEYS.has(key)) {
+      for (const g of v) {
+        if (g && g.id && !(isValidUUID(g.id) || (MOCK_GRAPH && /^mock-[\w-]+$/.test(g.id))))
+          return `identifiant de groupe invalide : ${String(g.id).slice(0, 40)}`;
+        for (const f of ['name', 'label', 'location']) {
+          if (g && typeof g[f] === 'string' && g[f].length > 256) return `champ "${f}" trop long`;
+        }
+      }
+    }
+    if (JSON.stringify(v).length > 256 * 1024) return 'payload trop volumineux';
+    return null;
+  }
+  if (typeof v === 'string' && v.length > 4096) return 'valeur trop longue';
+  const rule = SCALAR_RULES[key];
+  if (rule && v !== '' && !rule(typeof v === 'string' ? v.trim() : String(v))) return 'valeur non autorisée';
+  return null;
+}
+
 app.put('/api/admin/settings', auth, requireRole('admin'), async (req, res) => {
   const db = await getDB();
+  // Valider AVANT toute écriture (rejet atomique)
+  for (const [k, v] of Object.entries(req.body)) {
+    if (!Object.keys(SETTINGS_MAP).includes(k)) continue;
+    const err = validateSettingValue(k, v);
+    if (err) return res.status(400).json({ error: `Paramètre "${k}" : ${err}` });
+  }
   Object.entries(req.body).forEach(([k, v]) => {
     if (!Object.keys(SETTINGS_MAP).includes(k)) return;
     const val = Array.isArray(v) ? JSON.stringify(v) : (typeof v === 'string' ? v.trim() : String(v));
@@ -629,7 +730,9 @@ app.post('/api/admin/users', auth, requireRole('admin'), async (req, res) => {
     return res.status(403).json({ error: 'Vous ne pouvez pas attribuer ce rôle' });
 
   const db = await getDB();
-  const existing = dbRow(db, `SELECT id FROM users WHERE email=?`, [email.toLowerCase()]);
+  if (!isValidEmail(normalizeEmail(email)))
+    return res.status(400).json({ error: 'Adresse email invalide' });
+  const existing = dbRow(db, `SELECT id FROM users WHERE email=?`, [normalizeEmail(email)]);
   if (existing) return res.status(400).json({ error: 'Email déjà utilisé' });
 
   const id = uuidv4();
@@ -648,7 +751,7 @@ app.post('/api/admin/users', auth, requireRole('admin'), async (req, res) => {
 
   db.run(
     `INSERT INTO users (id, name, email, role, password_hash, invite_token, invite_expires, status) VALUES (?,?,?,?,?,?,?,?)`,
-    [id, name, email.toLowerCase(), wantRole, hash, inviteToken, inviteExpires, hash ? 'active' : 'pending']
+    [id, name, normalizeEmail(email), wantRole, hash, inviteToken, inviteExpires, hash ? 'active' : 'pending']
   );
   saveDB();
 
@@ -657,7 +760,10 @@ app.post('/api/admin/users', auth, requireRole('admin'), async (req, res) => {
 });
 
 app.put('/api/admin/users/:id', auth, requireRole('admin'), async (req, res) => {
+  if (!isValidUUID(req.params.id)) return res.status(400).json({ error: 'ID invalide' });
   const { name, email, role, status } = req.body;
+  if (email != null && !isValidEmail(normalizeEmail(email)))
+    return res.status(400).json({ error: 'Adresse email invalide' });
   const db = await getDB();
   const current = dbRow(db, `SELECT status, role FROM users WHERE id=?`, [req.params.id]);
   if (!current) return res.status(404).json({ error: 'Utilisateur introuvable' });
@@ -673,13 +779,13 @@ app.put('/api/admin/users/:id', auth, requireRole('admin'), async (req, res) => 
     return res.status(400).json({ error: 'Impossible : dernier administrateur actif' });
 
   if (email) {
-    const dup = dbRow(db, `SELECT id FROM users WHERE email=? AND id!=?`, [email.toLowerCase(), req.params.id]);
+    const dup = dbRow(db, `SELECT id FROM users WHERE email=? AND id!=?`, [normalizeEmail(email), req.params.id]);
     if (dup) return res.status(400).json({ error: 'Email déjà utilisé' });
   }
 
   db.run(
     `UPDATE users SET name=COALESCE(?,name), email=COALESCE(?,email), role=COALESCE(?,role), status=COALESCE(?,status) WHERE id=?`,
-    [name ?? null, email?.toLowerCase() ?? null, role ?? null, status ?? null, req.params.id]
+    [name ?? null, email ? normalizeEmail(email) : null, role ?? null, status ?? null, req.params.id]
   );
   // Invalider les sessions actives si rôle ou statut modifié
   if (role != null || status != null)
@@ -689,6 +795,7 @@ app.put('/api/admin/users/:id', auth, requireRole('admin'), async (req, res) => 
 });
 
 app.delete('/api/admin/users/:id', auth, requireRole('admin'), async (req, res) => {
+  if (!isValidUUID(req.params.id)) return res.status(400).json({ error: 'ID invalide' });
   if (req.params.id === req.user.id)
     return res.status(400).json({ error: 'Impossible de supprimer son propre compte' });
   const db = await getDB();
@@ -702,14 +809,18 @@ app.delete('/api/admin/users/:id', auth, requireRole('admin'), async (req, res) 
 });
 
 app.put('/api/admin/users/:id/reset-password', auth, requireRole('admin'), async (req, res) => {
+  if (!isValidUUID(req.params.id)) return res.status(400).json({ error: 'ID invalide' });
   const { password } = req.body;
   const pwErr = validatePassword(password);
   if (pwErr) return res.status(400).json({ error: pwErr });
   const db = await getDB();
+  const target = dbRow(db, `SELECT id, email FROM users WHERE id=?`, [req.params.id]);
+  if (!target) return res.status(404).json({ error: 'Utilisateur introuvable' });
   const hash = await hashPassword(password);
   db.run(`UPDATE users SET password_hash=? WHERE id=?`, [hash, req.params.id]);
   db.run(`DELETE FROM sessions WHERE user_id=?`, [req.params.id]);
   saveDB();
+  logAction(`Mot de passe réinitialisé pour ${target.email} par ${req.user.email}`);
   res.json({ ok: true });
 });
 
