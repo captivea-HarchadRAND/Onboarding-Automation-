@@ -146,6 +146,14 @@ function isValidEmail(email) {
   return typeof email === 'string' && email.length <= 254 && EMAIL_RE.test(email);
 }
 
+// Hash factice pour égaliser le temps de réponse du login quand l'email n'existe pas
+// (empêche l'énumération de comptes par mesure de timing)
+let _dummyHash = null;
+async function getDummyHash() {
+  if (!_dummyHash) _dummyHash = await hashPassword(randomBytes(16).toString('hex'));
+  return _dummyHash;
+}
+
 function validatePassword(pw) {
   if (!pw || pw.length < MIN_PASSWORD_LEN) return `Minimum ${MIN_PASSWORD_LEN} caractères requis.`;
   if (!/[A-Z]/.test(pw)) return 'Au moins une majuscule requise.';
@@ -230,7 +238,10 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
   if (!email || !password) return res.status(400).json({ error: 'Email et mot de passe requis' });
   const db = await getDB();
   const user = dbRow(db, `SELECT * FROM users WHERE email=? AND status='active'`, [normalizeEmail(email)]);
-  if (!user || !user.password_hash) return res.status(401).json({ error: 'Identifiants invalides' });
+  if (!user || !user.password_hash) {
+    await verifyPassword(password, await getDummyHash()); // temps de réponse constant (anti-énumération)
+    return res.status(401).json({ error: 'Identifiants invalides' });
+  }
   const ok = await verifyPassword(password, user.password_hash);
   if (!ok) return res.status(401).json({ error: 'Identifiants invalides' });
 
@@ -305,10 +316,16 @@ app.post('/api/auth/invite/:token', authLimiter, async (req, res) => {
     logAction(`Tentative d'acceptation d'invitation avec token invalide/expiré`);
     return res.status(404).json({ error: 'Invitation invalide ou expirée' });
   }
-  logAction(`Invitation acceptée par ${user.email} (activation de compte)`);
   const hash = await hashPassword(password);
-  db.run(`UPDATE users SET password_hash=?, invite_token=NULL, invite_expires=NULL, status='active' WHERE id=?`, [hash, user.id]);
+  // Consommation ATOMIQUE du token : la condition `invite_token=?` garantit l'usage unique même si
+  // deux requêtes concurrentes passent le SELECT ci-dessus (la 2e modifiera 0 ligne → rejetée).
+  db.run(`UPDATE users SET password_hash=?, invite_token=NULL, invite_expires=NULL, status='active' WHERE id=? AND invite_token=?`, [hash, user.id, req.params.token]);
+  if (db.getRowsModified() === 0) {
+    logAction(`Invitation déjà consommée — requête concurrente rejetée`);
+    return res.status(409).json({ error: 'Invitation déjà utilisée' });
+  }
   saveDB();
+  logAction(`Invitation acceptée par ${user.email} (activation de compte)`);
   const sessionToken = uuidv4();
   const expires = new Date(Date.now() + SESSION_TTL_DAYS * 86400000).toISOString();
   db.run(`INSERT INTO sessions VALUES (?,?,?,?,?)`, [sessionToken, user.id, user.name, user.role, expires]);
@@ -565,6 +582,24 @@ app.post('/api/onboardings', auth, async (req, res) => {
     return res.status(400).json({ error: 'Domaine email non autorisé' });
   }
 
+  // Anti-escalade de privilèges : vérifier côté serveur que la licence est réellement disponible
+  // et que le groupe ciblé est bien un groupe de sécurité (empêche un operator de forger un groupId
+  // arbitraire — ex. un groupe à privilèges). Ignoré en mode mock (données fictives).
+  if (!MOCK_GRAPH) {
+    try {
+      const licenses = await listAvailableLicenses();
+      if (!licenses.some(l => l.skuId === skuId))
+        return res.status(400).json({ error: 'Licence non disponible ou non autorisée' });
+      const grp = await getGroupById(groupId);
+      if (!grp || grp.securityEnabled !== true || grp.mailEnabled !== false)
+        return res.status(400).json({ error: 'Groupe non autorisé (un groupe de sécurité est requis)' });
+    } catch (e) {
+      if (e.graphStatus === 404) return res.status(400).json({ error: "Groupe introuvable dans l'organisation" });
+      console.error('[onboarding] validation Graph:', e.message);
+      return res.status(502).json({ error: 'Validation impossible (Microsoft Graph indisponible)' });
+    }
+  }
+
   const db = await getDB();
   const id = uuidv4();
 
@@ -774,7 +809,8 @@ app.put('/api/admin/users/:id', auth, requireRole('admin'), async (req, res) => 
   if (role != null && role !== current.role && !canAssignRole(req.user.role, role))
     return res.status(403).json({ error: 'Rôle non autorisé' });
 
-  const demoting = current.role === 'admin' && ((role != null && role !== 'admin') || status === 'disabled');
+  // Tout statut ≠ 'active' (disabled ET pending) prive d'accès → compte comme rétrogradation
+  const demoting = current.role === 'admin' && ((role != null && role !== 'admin') || (status != null && status !== 'active'));
   if (demoting && countActiveAdmins(db, req.params.id) === 0)
     return res.status(400).json({ error: 'Impossible : dernier administrateur actif' });
 

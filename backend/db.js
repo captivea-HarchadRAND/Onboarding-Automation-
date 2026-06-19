@@ -30,8 +30,12 @@ async function getDB() {
 function saveDB() {
   const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
   const DB_PATH = path.join(DATA_DIR, 'onboarding.db');
+  const TMP_PATH = `${DB_PATH}.tmp`;
   const data = db.export();
-  fs.writeFileSync(DB_PATH, Buffer.from(data));
+  // Écriture atomique : on écrit dans un fichier temporaire puis on renomme (rename atomique sur
+  // le même volume). Évite un fichier .db tronqué/corrompu si le process est tué pendant l'écriture.
+  fs.writeFileSync(TMP_PATH, Buffer.from(data));
+  fs.renameSync(TMP_PATH, DB_PATH);
 }
 
 function migrate(db) {

@@ -25,7 +25,7 @@ async function addMemberToGroup(groupId, userId) {
 }
 
 async function getGroupById(id) {
-  return graphFetch(`/groups/${encodeURIComponent(id)}?$select=id,displayName`);
+  return graphFetch(`/groups/${encodeURIComponent(id)}?$select=id,displayName,securityEnabled,mailEnabled`);
 }
 
 module.exports = { listGroups, addMemberToGroup, getGroupById };
