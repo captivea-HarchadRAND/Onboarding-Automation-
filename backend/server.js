@@ -597,11 +597,15 @@ app.post('/api/onboardings', auth, async (req, res) => {
         const raw = dbRow(cfgDb, `SELECT value FROM settings WHERE key=?`, [k])?.value;
         if (raw) { try { JSON.parse(raw).forEach(g => g && g.id && configuredIds.add(g.id)); } catch (_) {} }
       }
-      // Sinon (groupe auto-matché via recherche), exiger un groupe de sécurité (défense en profondeur).
+      // Sinon (groupe auto-matché via recherche) : exiger un groupe de sécurité ET le respect de la
+      // convention de provisioning « SP … » (celle de l'auto-match). Bloque l'ajout à un groupe de
+      // sécurité à privilèges (ex. "Domain Admins") via une requête forgée hors UI.
       if (!configuredIds.has(groupId)) {
         const grp = await getGroupById(groupId);
-        if (!grp || grp.securityEnabled !== true || grp.mailEnabled !== false)
-          return res.status(400).json({ error: 'Groupe non autorisé (un groupe de sécurité est requis)' });
+        const okSecurity   = grp && grp.securityEnabled === true && grp.mailEnabled === false;
+        const okConvention = grp && /^(2024_)?\s*SP\b/i.test(grp.displayName || '');
+        if (!okSecurity || !okConvention)
+          return res.status(400).json({ error: 'Groupe non autorisé (groupe de provisioning « SP - … » requis)' });
       }
     } catch (e) {
       if (e.graphStatus === 404) return res.status(400).json({ error: "Groupe introuvable dans l'organisation" });
