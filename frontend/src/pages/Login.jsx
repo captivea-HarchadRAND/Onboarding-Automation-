@@ -90,10 +90,6 @@ export default function Login() {
             </button>
           </form>
         </div>
-
-        <p style={{ textAlign: 'center', marginTop: 20, color: 'var(--muted)', fontSize: 12 }}>
-          Les credentials Azure AD viennent du fichier <code style={{ color: 'var(--text2)' }}>.env</code> du backend.
-        </p>
       </div>
     </div>
   );

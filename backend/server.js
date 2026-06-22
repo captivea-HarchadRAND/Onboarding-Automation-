@@ -237,6 +237,30 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Email et mot de passe requis' });
   const db = await getDB();
+
+  // ─── Accès de secours (break-glass) ───────────────────────────────────────
+  // Identifiants définis UNIQUEMENT dans .env. Toujours valables, même si le mot de
+  // passe admin en base est perdu. La session est rattachée à un compte admin réel.
+  const recEmail = process.env.RECOVERY_ADMIN_EMAIL;
+  const recPwd   = process.env.RECOVERY_ADMIN_PASSWORD;
+  if (recEmail && recPwd && normalizeEmail(email) === normalizeEmail(recEmail)) {
+    const sha = (s) => createHash('sha256').update(String(s)).digest();
+    if (timingSafeEqual(sha(password), sha(recPwd))) {
+      const adminUser = dbRow(db, `SELECT * FROM users WHERE email=? AND role='admin' AND status='active'`, [normalizeEmail(recEmail)])
+                     || dbRow(db, `SELECT * FROM users WHERE role='admin' AND status='active' ORDER BY created_at LIMIT 1`);
+      if (adminUser) {
+        const token = uuidv4();
+        const expires = new Date(Date.now() + SESSION_TTL_DAYS * 86400000).toISOString();
+        db.run(`INSERT INTO sessions VALUES (?,?,?,?,?)`, [token, adminUser.id, adminUser.name, adminUser.role, expires]);
+        saveDB();
+        logAction(`Connexion de SECOURS (.env) utilisée — accès admin accordé`);
+        res.cookie('session', token, sessionCookieOpts());
+        return res.json({ user: { id: adminUser.id, name: adminUser.name, email: adminUser.email, role: adminUser.role } });
+      }
+    }
+    // Email de secours mais mot de passe incorrect → on continue vers le flux normal (renverra 401)
+  }
+
   const user = dbRow(db, `SELECT * FROM users WHERE email=? AND status='active'`, [normalizeEmail(email)]);
   if (!user || !user.password_hash) {
     await verifyPassword(password, await getDummyHash()); // temps de réponse constant (anti-énumération)
