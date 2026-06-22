@@ -16,12 +16,18 @@ async function listGroups(search = '') {
 }
 
 async function addMemberToGroup(groupId, userId) {
-  return graphFetch(`/groups/${encodeURIComponent(groupId)}/members/$ref`, {
-    method: 'POST',
-    body: {
-      '@odata.id': `https://graph.microsoft.com/v1.0/directoryObjects/${encodeURIComponent(userId)}`,
-    },
-  });
+  try {
+    return await graphFetch(`/groups/${encodeURIComponent(groupId)}/members/$ref`, {
+      method: 'POST',
+      body: {
+        '@odata.id': `https://graph.microsoft.com/v1.0/directoryObjects/${encodeURIComponent(userId)}`,
+      },
+    });
+  } catch (e) {
+    // Déjà membre du groupe → idempotent, ce n'est pas une erreur (évite un échec/rollback inutile)
+    if (e.graphStatus === 400 && /already exist/i.test(e.message || '')) return null;
+    throw e;
+  }
 }
 
 async function getGroupById(id) {

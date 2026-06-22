@@ -484,7 +484,10 @@ async function executeOnboarding(id) {
       ...countryGroups.filter(g => g.id && g.location === location),
       ...pointageGroups.filter(g => g.id && g.location === location),
       ...commGroups,
-    ];
+    ]
+      // Exclure le groupe principal (déjà ajouté à l'étape 2) et dédupliquer par id
+      .filter(g => g.id && g.id !== onb.group_id)
+      .filter((g, i, arr) => arr.findIndex(x => x.id === g.id) === i);
     if (spGroups.length === 0) {
       logAction(`[${id}] [4/4] Aucun groupe SharePoint configuré — étape ignorée`);
     } else {
