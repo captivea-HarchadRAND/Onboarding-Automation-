@@ -108,6 +108,9 @@ function migrate(db) {
     // et n'est renvoyé qu'une fois à son créateur. Colonne conservée pour ne pas casser
     // la séquence de migrations ; toute écriture ici romprait l'invariant de sécurité.
     `ALTER TABLE onboardings ADD COLUMN temp_password TEXT;`,
+
+    // v4: ville de l'employé (pour les pays ayant des villes configurées)
+    `ALTER TABLE onboardings ADD COLUMN city TEXT;`,
   ];
 
   for (let i = current; i < migrations.length; i++) {

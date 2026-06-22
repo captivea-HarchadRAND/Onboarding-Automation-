@@ -483,15 +483,18 @@ function CommGroupRows({ groups, setGroups, locations, allowedRoles }) {
   );
 }
 
-function GroupRows({ groups, setGroups, showLocation = false, locations = [] }) {
+function GroupRows({ groups, setGroups, showLocation = false, showCities = false, locations = [] }) {
   const [confirmIdx, setConfirmIdx] = useState(null);
 
   function add() {
     if (groups.some(g => g.label.trim() === '')) return;
-    setGroups(g => [...g, showLocation ? { label: '', id: '', location: '' } : { label: '', id: '' }]);
+    setGroups(g => [...g, showLocation ? { label: '', id: '', location: '', cities: [] } : { label: '', id: '' }]);
   }
   function remove(i) { setGroups(g => g.filter((_, idx) => idx !== i)); setConfirmIdx(null); }
   function update(i, key, val) { setGroups(g => g.map((item, idx) => idx === i ? { ...item, [key]: val } : item)); }
+  function addCity(i)        { setGroups(g => g.map((item, idx) => idx === i ? { ...item, cities: [...(item.cities || []), { name: '', id: '' }] } : item)); }
+  function removeCity(i, ci) { setGroups(g => g.map((item, idx) => idx === i ? { ...item, cities: (item.cities || []).filter((_, x) => x !== ci) } : item)); }
+  function updateCity(i, ci, key, val) { setGroups(g => g.map((item, idx) => idx === i ? { ...item, cities: (item.cities || []).map((c, x) => x === ci ? { ...c, [key]: val } : c) } : item)); }
 
   return (
     <div>
@@ -501,7 +504,8 @@ function GroupRows({ groups, setGroups, showLocation = false, locations = [] }) 
         </div>
       )}
       {groups.map((g, i) => (
-        <div key={i} style={{ display: 'grid', gridTemplateColumns: showLocation ? '1fr auto 1.4fr auto' : '1fr 1.4fr auto', gap: 8, marginBottom: 8, alignItems: 'center' }}>
+        <div key={i} style={{ marginBottom: 8 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: showLocation ? '1fr auto 1.4fr auto' : '1fr 1.4fr auto', gap: 8, alignItems: 'center' }}>
           <input
             placeholder="Nom affiché *"
             value={g.label}
@@ -564,6 +568,23 @@ function GroupRows({ groups, setGroups, showLocation = false, locations = [] }) 
               }}
               title="Supprimer"
             >✕</button>
+          )}
+          </div>
+
+          {showCities && g.location && (
+            <div style={{ marginLeft: 24, marginTop: 6, paddingLeft: 10, borderLeft: '2px solid var(--border)' }}>
+              <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 5 }}>Villes (optionnel) — un groupe par ville</div>
+              {(g.cities || []).map((c, ci) => (
+                <div key={ci} style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr auto', gap: 8, marginBottom: 6, alignItems: 'center' }}>
+                  <input placeholder="Nom de la ville" value={c.name || ''} onChange={e => updateCity(i, ci, 'name', e.target.value)} />
+                  <input type="text" autoComplete="off" placeholder="Group Object ID" value={c.id || ''} onChange={e => updateCity(i, ci, 'id', e.target.value)} style={{ fontFamily: 'monospace', fontSize: 12, WebkitTextSecurity: c.id ? 'disc' : 'none' }} />
+                  <button type="button" onClick={() => removeCity(i, ci)} title="Supprimer la ville" style={{ background: 'transparent', border: '1px solid var(--border)', borderRadius: 6, width: 30, height: 34, cursor: 'pointer', color: 'var(--muted)', fontSize: 14, flexShrink: 0 }}>✕</button>
+                </div>
+              ))}
+              <button type="button" onClick={() => addCity(i)} style={{ marginTop: 2, background: 'transparent', border: '1px dashed var(--border)', borderRadius: 6, padding: '4px 12px', cursor: 'pointer', color: 'var(--muted)', fontSize: 11, display: 'flex', alignItems: 'center', gap: 5 }}>
+                <span style={{ fontSize: 14, lineHeight: 1 }}>+</span> Ajouter une ville
+              </button>
+            </div>
           )}
         </div>
       ))}
@@ -707,10 +728,14 @@ function TabOrg({ locations, onLocationsChange }) {
     if (hasMissingId) { setError('Chaque groupe doit avoir un Group Object ID.'); setSaving(false); return; }
     const hasNoPays = communicationGroups.filter(g => g.id).some(g => g.location !== 'ALL' && (g.departments || []).length > 0 && (g.countries || []).length === 0);
     if (hasNoPays) { setError('Un groupe Default avec des rôles doit avoir au moins un pays.'); setSaving(false); return; }
+    // Villes : si renseignée, une ville doit avoir un nom ET un Group Object ID
+    const badCity = countryGroups.some(g => (g.cities || []).some(c => (c.name?.trim() || c.id?.trim()) && (!c.name?.trim() || !c.id?.trim())));
+    if (badCity) { setError('Chaque ville doit avoir un nom ET un Group Object ID.'); setSaving(false); return; }
     // Vérification Azure AD sur tous les groupes (nouveaux, modifiés et existants)
     const toVerify = [
       ...globalGroups.filter(g => g.id?.trim()).map(g => ({ id: g.id.trim(), label: g.label })),
       ...countryGroups.filter(g => g.id?.trim()).map(g => ({ id: g.id.trim(), label: g.label })),
+      ...countryGroups.flatMap(g => (g.cities || []).filter(c => c.id?.trim()).map(c => ({ id: c.id.trim(), label: `${g.label} / ${c.name}` }))),
       ...communicationGroups.filter(g => g.id?.trim()).map(g => ({ id: g.id.trim(), label: g.name || g.id })),
     ];
     const uniqueToVerify = [...new Map(toVerify.map(g => [g.id, g])).values()];
@@ -736,9 +761,15 @@ function TabOrg({ locations, onLocationsChange }) {
       const validGroupIds = new Set(deptAssignments.filter(g => g.departments.length > 0).map(g => g.id));
       const updatedPointageComm = pointageCommAssign.filter(a => validGroupIds.has(a.id));
 
+      // Nettoyer les villes vides (nom ET id non renseignés) avant sauvegarde
+      const cleanCountryGroups = countryGroups.map(g => ({
+        ...g,
+        cities: (g.cities || []).filter(c => c.name?.trim() && c.id?.trim()).map(c => ({ name: c.name.trim(), id: c.id.trim() })),
+      }));
+
       await api.put('/api/admin/settings', {
         sharepoint_global_groups:  globalGroups,
-        sharepoint_country_groups: countryGroups,
+        sharepoint_country_groups: cleanCountryGroups,
         department_assignments:    deptAssignments,
         pointage_comm_assignments: updatedPointageComm,
       });
@@ -777,7 +808,7 @@ function TabOrg({ locations, onLocationsChange }) {
             <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>Ajoutés selon la localisation de l'employé</div>
           </div>
         </div>
-        <GroupRows groups={countryGroups} setGroups={setCountryGroups} showLocation={true} locations={locations} />
+        <GroupRows groups={countryGroups} setGroups={setCountryGroups} showLocation={true} showCities={true} locations={locations} />
       </div>
 
       {/* Groupes de communication */}

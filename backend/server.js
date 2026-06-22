@@ -466,6 +466,13 @@ async function executeOnboarding(id) {
     const pointageCommAssign   = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='pointage_comm_assignments'`)?.value    || '[]');
     const location             = onb.location || '';
     const jobRole              = onb.job_role || '';
+    const city                 = onb.city || '';
+    // Groupe(s) de la ville sélectionnée (configurés sous le groupe pays correspondant)
+    const cityGroups = countryGroups
+      .filter(g => g.location === location)
+      .flatMap(g => g.cities || [])
+      .filter(c => c.id && c.name === city)
+      .map(c => ({ id: c.id, label: c.name }));
     // Groupes de communication — fusion des deux sources avec déduplication par id
     const commGroups = [
       ...deptAssignments.filter(g => {
@@ -482,6 +489,7 @@ async function executeOnboarding(id) {
     const spGroups = [
       ...globalGroups.filter(g => g.id),
       ...countryGroups.filter(g => g.id && g.location === location),
+      ...cityGroups,
       ...pointageGroups.filter(g => g.id && g.location === location),
       ...commGroups,
     ]
@@ -570,7 +578,7 @@ app.get('/api/onboardings/:id', auth, async (req, res) => {
 });
 
 app.post('/api/onboardings', auth, async (req, res) => {
-  const { firstName, lastName, email, jobRole, location, groupId, groupName, skuId, licenseName } = req.body;
+  const { firstName, lastName, email, jobRole, location, city, groupId, groupName, skuId, licenseName } = req.body;
   if (!firstName?.trim() || !lastName?.trim())
     return res.status(400).json({ error: 'Prénom et nom requis' });
   // Limites de longueur (anti-DoS mémoire sql.js + cohérence Graph)
@@ -607,6 +615,18 @@ app.post('/api/onboardings', auth, async (req, res) => {
     .filter(d => d && d.active && d.domain).map(d => d.domain.toLowerCase());
   if (activeDomains.length > 0 && !activeDomains.includes(employeeEmail.split('@')[1])) {
     return res.status(400).json({ error: 'Domaine email non autorisé' });
+  }
+
+  // Ville : si le pays sélectionné a des villes configurées, une ville valide est requise
+  const countryGroupsCfg = JSON.parse(dbRow(await getDB(), `SELECT value FROM settings WHERE key='sharepoint_country_groups'`)?.value || process.env.SP_COUNTRY_GROUPS || '[]');
+  const citiesForLocation = (Array.isArray(countryGroupsCfg) ? countryGroupsCfg : [])
+    .filter(g => g.location === (location || '').trim())
+    .flatMap(g => g.cities || [])
+    .filter(c => c && c.name && c.id);
+  const cityTrim = (city || '').trim();
+  if (citiesForLocation.length > 0) {
+    if (!cityTrim) return res.status(400).json({ error: 'Ville requise pour cette localisation' });
+    if (!citiesForLocation.some(c => c.name === cityTrim)) return res.status(400).json({ error: 'Ville non autorisée' });
   }
 
   // Anti-escalade de privilèges : vérifier côté serveur que la licence est réellement disponible
@@ -647,12 +667,12 @@ app.post('/api/onboardings', auth, async (req, res) => {
   db.run(
     `INSERT INTO onboardings
       (id, employee_firstname, employee_lastname, employee_email,
-       job_role, location,
+       job_role, location, city,
        group_id, group_name, sku_id, license_name,
        status, created_by, created_by_name)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [id, firstName.trim(), lastName.trim(), employeeEmail,
-     jobRole?.trim() || null, location?.trim() || null,
+     jobRole?.trim() || null, location?.trim() || null, cityTrim || null,
      groupId, groupName, skuId, licenseName,
      'pending', req.user.id, req.user.name]
   );

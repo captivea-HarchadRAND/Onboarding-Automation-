@@ -296,7 +296,7 @@ function LocationCombobox({ value, onChange, locations = [] }) {
   );
 }
 
-const EMPTY_FORM = { firstName: '', lastName: '', email: '', emailDomain: DEFAULT_DOMAIN, jobRole: '', location: '' };
+const EMPTY_FORM = { firstName: '', lastName: '', email: '', emailDomain: DEFAULT_DOMAIN, jobRole: '', location: '', city: '' };
 
 function RecapCollapse({ title, count, color, children }) {
   const [open, setOpen] = useState(false);
@@ -331,6 +331,7 @@ function RecapItem({ label, color }) {
 export default function NewOnboarding() {
   const [step, setStep]       = useState(1);
   const [form, setForm]       = useState(EMPTY_FORM);
+  const emailEditedRef        = useRef(false); // true dès que l'utilisateur modifie l'email à la main
   const [domains, setDomains]           = useState([DEFAULT_DOMAIN]);
   const [spGlobalGroups, setSpGlobalGroups]   = useState([]);
   const [spCountryGroups, setSpCountryGroups] = useState([]);
@@ -400,8 +401,10 @@ export default function NewOnboarding() {
     }).catch(() => {});
   }, []);
 
-  // Auto-fill email local part (prenom.nom) depuis prénom / nom
+  // Auto-fill email local part (prenom.nom) depuis prénom / nom.
+  // S'arrête dès que l'utilisateur a modifié l'email manuellement (pour ne pas écraser sa saisie).
   useEffect(() => {
+    if (emailEditedRef.current) return;
     const first = normalizeForEmail(form.firstName).toLowerCase();
     const last  = normalizeForEmail(form.lastName).toLowerCase();
     if (!first && !last) return;
@@ -508,6 +511,7 @@ export default function NewOnboarding() {
         email:       `${form.email.trim()}@${form.emailDomain}`,
         jobRole:     form.jobRole.trim() || undefined,
         location:    form.location.trim() || undefined,
+        city:        form.city.trim() || undefined,
         groupId:     selectedGroup.id,
         groupName:   selectedGroup.displayName,
         skuId:       selectedLicense.skuId,
@@ -527,6 +531,7 @@ export default function NewOnboarding() {
   }
 
   function resetAll() {
+    emailEditedRef.current = false;
     setStep(1); setForm(EMPTY_FORM);
     setSelectedGroup(null); setSelectedLicense(null);
     setAutoGroup(null); setShowManualSearch(false);
@@ -535,6 +540,12 @@ export default function NewOnboarding() {
     setError('');
     setRevealState('locked'); setLaunchState('idle'); setVerifyPwd(''); setVerifyError('');
   }
+
+  // Villes disponibles pour la localisation choisie (configurées sous les groupes pays)
+  const citiesForLocation = spCountryGroups
+    .filter(g => g.location === form.location)
+    .flatMap(g => g.cities || [])
+    .filter(c => c && c.name && c.id);
 
   return (
     <div style={{ maxWidth: 680, margin: '0 auto' }}>
@@ -583,7 +594,7 @@ export default function NewOnboarding() {
                       <label>Localisation *</label>
                       <LocationCombobox
                         value={form.location}
-                        onChange={v => setForm(f => ({ ...f, location: v }))}
+                        onChange={v => setForm(f => ({ ...f, location: v, city: '' }))}
                         locations={locations}
                       />
                     </div>
@@ -623,12 +634,27 @@ export default function NewOnboarding() {
             );
           })()}
 
+          {/* Ville — affichée uniquement si le pays sélectionné a des villes configurées */}
+          {citiesForLocation.length > 0 && (
+            <div className="form-group">
+              <label>Ville *</label>
+              <select
+                value={form.city}
+                onChange={e => setForm(f => ({ ...f, city: e.target.value }))}
+                style={{ height: 38, width: '100%', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--surface2)', color: 'var(--text)', padding: '0 12px' }}
+              >
+                <option value="">Sélectionner une ville...</option>
+                {citiesForLocation.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+              </select>
+            </div>
+          )}
+
           <div className="form-group">
             <label>Email M365 *</label>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', height: 38 }}>
               <input
                 value={form.email}
-                onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
+                onChange={e => { emailEditedRef.current = true; setForm(f => ({ ...f, email: e.target.value })); }}
                 placeholder="Prenom.Nom"
                 style={{ borderRadius: '8px 0 0 8px', borderRight: 'none', width: '100%', boxSizing: 'border-box' }}
               />
@@ -669,6 +695,7 @@ export default function NewOnboarding() {
                 !form.lastName.trim() ||
                 !form.jobRole ||
                 (!GLOBAL_ROLES.has(form.jobRole) && !form.location) ||
+                (citiesForLocation.length > 0 && !form.city) ||
                 !form.email.trim()
               }
               onClick={() => { setError(''); setStep(2); }}
@@ -946,7 +973,7 @@ export default function NewOnboarding() {
                     <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>{form.firstName} {form.lastName}</div>
                     <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 1 }}>{form.email}@{form.emailDomain}</div>
                   </div>
-                  {locObj && <span style={{ fontSize: 12, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, padding: '3px 10px', color: 'var(--text2)', whiteSpace: 'nowrap', flexShrink: 0 }}>{locObj.flag} {locObj.code}</span>}
+                  {locObj && <span style={{ fontSize: 12, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, padding: '3px 10px', color: 'var(--text2)', whiteSpace: 'nowrap', flexShrink: 0 }}>{locObj.flag} {locObj.code}{form.city ? ` · ${form.city}` : ''}</span>}
                 </div>
 
                 <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
