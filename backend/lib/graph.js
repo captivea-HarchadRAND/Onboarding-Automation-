@@ -37,6 +37,11 @@ async function graphFetch(path, options = {}, extraHeaders = {}) {
     const err = new Error(msg);
     err.code = data?.error?.code;
     err.graphStatus = res.status;
+    // Détail Exchange — internalexception est plus précis que innererror.message
+    err.innerMessage = data?.error?.innererror?.internalexception?.message
+                    || data?.error?.innererror?.message
+                    || null;
+    err.innerType = data?.error?.innererror?.type || null;
     throw err;
   }
 

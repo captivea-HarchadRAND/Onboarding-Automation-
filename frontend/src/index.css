@@ -1,30 +1,55 @@
+/* ── Design System: Onboarding M365 (Enterprise Dark OLED) ─────────
+   Base: ui-ux-pro-max → Enterprise Gateway + Dark Mode OLED
+   Font: Plus Jakarta Sans | Style: Enterprise SaaS dark
+   ─────────────────────────────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+
 :root {
-  --bg: #0d1117;
-  --surface: #161b22;
-  --surface2: #21262d;
-  --border: #30363d;
-  --text: #e6edf3;
-  --text2: #c9d1d9;
-  --muted: #8b949e;
-  --primary: #2563eb;
-  --primary-hover: #1d4ed8;
-  --success: #22c55e;
-  --success-bg: rgba(34,197,94,.12);
-  --warning: #f59e0b;
-  --warning-bg: rgba(245,158,11,.12);
-  --danger: #ef4444;
-  --danger-bg: rgba(239,68,68,.12);
-  --info: #06b6d4;
-  --info-bg: rgba(6,182,212,.12);
-  --pending-bg: rgba(139,148,158,.1);
-  --sidebar-w: 220px;
-  --radius: 10px;
+  /* Surfaces */
+  --bg:       #020617;
+  --surface:  #0f172a;
+  --surface2: #1e293b;
+  --surface3: #253047;
+
+  /* Borders */
+  --border:        #334155;
+  --border-subtle: rgba(255,255,255,.06);
+
+  /* Text */
+  --text:  #f8fafc;
+  --text2: #cbd5e1;
+  --muted: #94a3b8;
+
+  /* Brand — Indigo (Enterprise SaaS) */
+  --primary:       #4f46e5;
+  --primary-hover: #4338ca;
+  --primary-glow:  rgba(79,70,229,.25);
+  --primary-soft:  rgba(79,70,229,.12);
+
+  /* Semantic */
+  --success:     #22c55e;
+  --success-bg:  rgba(34,197,94,.12);
+  --warning:     #f59e0b;
+  --warning-bg:  rgba(245,158,11,.12);
+  --danger:      #ef4444;
+  --danger-bg:   rgba(239,68,68,.12);
+  --info:        #06b6d4;
+  --info-bg:     rgba(6,182,212,.12);
+  --pending-bg:  rgba(148,163,184,.1);
+
+  /* Layout */
+  --sidebar-w: 240px;
+  --radius:    12px;
+  --radius-sm: 8px;
+
+  /* Transitions */
+  --transition: 150ms cubic-bezier(.4,0,.2,1);
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   background: var(--bg);
   color: var(--text);
   font-size: 14px;

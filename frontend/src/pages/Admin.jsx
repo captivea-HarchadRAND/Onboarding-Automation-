@@ -395,88 +395,65 @@ function CommGroupRows({ groups, setGroups, locations, allowedRoles }) {
   function remove(i)       { setGroups(g => g.filter((_, idx) => idx !== i)); }
   function update(i, k, v) { setGroups(g => g.map((item, idx) => idx === i ? { ...item, [k]: v } : item)); }
 
-  const lbl = { fontSize: 11, fontWeight: 600, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.05em' };
-
   return (
     <div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 130px 200px 1.5fr 1.5fr 32px', gap: 8, marginBottom: 6, padding: '0 2px' }}>
-        <div style={lbl}>Nom du groupe</div>
-        <div style={lbl}>Portée</div>
-        <div style={lbl}>Pays</div>
-        <div style={lbl}>Assigné à</div>
-        <div style={lbl}>ID</div>
-        <div />
-      </div>
       {groups.length === 0 && (
-        <div style={{ fontSize: 12, color: 'var(--muted)', padding: '10px 0', fontStyle: 'italic' }}>Aucun groupe configuré.</div>
+        <div style={{ fontSize: 12, color: 'var(--muted)', fontStyle: 'italic', padding: '8px 0' }}>Aucun groupe configuré.</div>
       )}
       {groups.map((g, i) => {
-        const isGbl       = g.location === 'ALL';
-        const countries   = g.countries || [];
-        const available   = locations.filter(l => !countries.includes(l.code));
+        const isGbl = g.location === 'ALL';
+        const countries = g.countries || [];
+        const available = locations.filter(l => !countries.includes(l.code));
         const paysInvalid = !isGbl && (g.departments || []).length > 0 && countries.length === 0;
         return (
-          <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 130px 200px 1.5fr 1.5fr 32px', gap: 8, marginBottom: 10, alignItems: 'start' }}>
-            <input
-              placeholder="Nom du groupe *"
-              value={g.name || ''}
-              onChange={e => update(i, 'name', e.target.value)}
-              style={(g.name || '').trim() === '' ? { borderColor: 'rgba(239,68,68,.6)', outline: 'none' } : {}}
-            />
-            <div
-              onClick={() => update(i, 'location', isGbl ? 'DEFAULT' : 'ALL')}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none', paddingTop: 6 }}>
-              <div style={{ width: 36, height: 20, borderRadius: 10, background: isGbl ? '#059669' : '#4b5563', position: 'relative', transition: 'background .2s', flexShrink: 0 }}>
-                <div style={{ width: 16, height: 16, borderRadius: '50%', background: '#fff', position: 'absolute', top: 2, left: isGbl ? 18 : 2, transition: 'left .2s', boxShadow: '0 1px 3px rgba(0,0,0,.4)' }} />
+          <div key={i} style={{ marginBottom: 10, padding: '12px 14px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--surface2)' }}>
+            {/* Ligne 1 : Nom + toggle + supprimer */}
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 }}>
+              <input placeholder="Nom *" value={g.name || ''} onChange={e => update(i, 'name', e.target.value)}
+                style={{ flex: 1, ...(!(g.name || '').trim() ? { borderColor: 'rgba(239,68,68,.6)' } : {}) }} />
+              <div onClick={() => update(i, 'location', isGbl ? 'DEFAULT' : 'ALL')}
+                style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer', userSelect: 'none',
+                         padding: '6px 11px', borderRadius: 7, border: `1px solid ${isGbl ? 'rgba(5,150,105,.35)' : 'var(--border)'}`,
+                         background: isGbl ? 'rgba(5,150,105,.07)' : 'transparent', flexShrink: 0, transition: 'all .15s' }}>
+                <div style={{ width: 30, height: 17, borderRadius: 9, background: isGbl ? '#059669' : '#4b5563', position: 'relative', transition: 'background .2s' }}>
+                  <div style={{ width: 13, height: 13, borderRadius: '50%', background: '#fff', position: 'absolute', top: 2, left: isGbl ? 15 : 2, transition: 'left .2s', boxShadow: '0 1px 2px rgba(0,0,0,.4)' }} />
+                </div>
+                <span style={{ fontSize: 12, fontWeight: 600, color: isGbl ? '#34d399' : 'var(--muted)' }}>{isGbl ? '🌐 Global' : 'Défaut'}</span>
               </div>
-              <span style={{ fontSize: 12, fontWeight: 600, color: isGbl ? '#34d399' : 'var(--muted)' }}>
-                {isGbl ? '🌐 Global' : 'Default'}
-              </span>
+              <button type="button" onClick={() => remove(i)}
+                style={{ background: 'transparent', border: '1px solid var(--border)', borderRadius: 6, width: 30, height: 34, cursor: 'pointer', color: 'var(--muted)', fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>✕</button>
             </div>
-            {/* Colonne Pays */}
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', minHeight: 34, borderRadius: 6, border: paysInvalid ? '1px solid rgba(239,68,68,.5)' : '1px solid transparent', background: paysInvalid ? 'rgba(239,68,68,.04)' : 'transparent', padding: '2px 4px' }}>
-              {isGbl ? (
-                <span style={{ fontSize: 11, color: '#059669', fontStyle: 'italic' }}>Toutes filiales</span>
-              ) : (
-                <>
+            {/* Ligne 2 : Pays + Rôles + ID */}
+            <div style={{ display: 'grid', gridTemplateColumns: !isGbl ? '1fr 1.5fr 1.5fr' : '1fr 1.5fr', gap: 8, alignItems: 'start' }}>
+              {!isGbl && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', minHeight: 34, padding: '3px 7px', borderRadius: 6, border: paysInvalid ? '1px solid rgba(239,68,68,.5)' : '1px solid var(--border)', background: 'var(--surface)' }}>
                   {countries.map(code => {
                     const loc = locations.find(l => l.code === code);
                     return (
-                      <span key={code} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 8px 2px 10px', borderRadius: 12, background: 'rgba(99,102,241,.15)', border: '1px solid rgba(99,102,241,.3)', fontSize: 12, color: '#818cf8', whiteSpace: 'nowrap' }}>
+                      <span key={code} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 7px 2px 9px', borderRadius: 12, background: 'rgba(99,102,241,.15)', border: '1px solid rgba(99,102,241,.3)', fontSize: 11, color: '#818cf8', whiteSpace: 'nowrap' }}>
                         {loc?.flag} {code}
-                        <button type="button" onClick={() => update(i, 'countries', countries.filter(c => c !== code))}
-                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#818cf8', padding: '0 0 0 2px', lineHeight: 1, fontSize: 14 }}>×</button>
+                        <button type="button" onClick={() => update(i, 'countries', countries.filter(c => c !== code))} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#818cf8', padding: '0 0 0 2px', lineHeight: 1, fontSize: 13 }}>×</button>
                       </span>
                     );
                   })}
                   {available.length > 0 && (
-                    <select defaultValue="" onChange={e => { if (e.target.value) { update(i, 'countries', [...countries, e.target.value]); e.target.value = ''; } }}
-                      style={{ fontSize: 12, padding: '2px 6px', borderRadius: 8, border: '1px dashed var(--border)', background: 'transparent', color: 'var(--muted)', cursor: 'pointer', maxWidth: 90 }}>
+                    <select defaultValue="" onChange={e => { if (e.target.value) { update(i, 'countries', [...countries, e.target.value]); e.target.value = ''; }}}
+                      style={{ fontSize: 11, padding: '2px 4px', borderRadius: 6, border: '1px dashed var(--border)', background: 'transparent', color: 'var(--muted)', cursor: 'pointer' }}>
                       <option value="">+ Pays</option>
                       {available.map(l => <option key={l.code} value={l.code}>{l.flag} {l.code}</option>)}
                     </select>
                   )}
-                </>
+                </div>
               )}
+              <DeptPillsEditor depts={g.departments || []} onChange={depts => update(i, 'departments', depts)} allowedRoles={allowedRoles} />
+              <input type="text" autoComplete="off" placeholder="Group Object ID" value={g.id}
+                onChange={e => update(i, 'id', e.target.value)}
+                style={{ fontFamily: 'monospace', fontSize: 12, WebkitTextSecurity: g.id ? 'disc' : 'none', ...(g.id.trim() === '' ? { borderColor: 'rgba(239,68,68,.6)' } : {}) }} />
             </div>
-            <DeptPillsEditor
-              depts={g.departments || []}
-              onChange={depts => update(i, 'departments', depts)}
-              allowedRoles={allowedRoles}
-            />
-            <input
-              type="text"
-              autoComplete="off"
-              placeholder="Group Object ID"
-              value={g.id}
-              onChange={e => update(i, 'id', e.target.value)}
-              style={{ fontFamily: 'monospace', fontSize: 12, WebkitTextSecurity: g.id ? 'disc' : 'none', ...(g.id.trim() === '' ? { borderColor: 'rgba(239,68,68,.6)', outline: 'none' } : {}) }}
-            />
-            <button type="button" onClick={() => remove(i)} style={{ background: 'transparent', border: '1px solid var(--border)', borderRadius: 6, width: 32, height: 34, cursor: 'pointer', color: 'var(--muted)', fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>✕</button>
           </div>
         );
       })}
-      <button type="button" onClick={add} style={{ marginTop: 4, padding: '6px 12px', borderRadius: 6, border: '1px dashed var(--border)', background: 'transparent', color: 'var(--muted)', cursor: 'pointer', fontSize: 12 }}>
+      <button type="button" onClick={add} style={{ marginTop: 4, padding: '6px 14px', borderRadius: 6, border: '1px dashed var(--border)', background: 'transparent', color: 'var(--muted)', cursor: 'pointer', fontSize: 12 }}>
         + Ajouter un groupe
       </button>
     </div>
@@ -485,6 +462,7 @@ function CommGroupRows({ groups, setGroups, locations, allowedRoles }) {
 
 function GroupRows({ groups, setGroups, showLocation = false, showCities = false, locations = [] }) {
   const [confirmIdx, setConfirmIdx] = useState(null);
+  const [expandedCities, setExpandedCities] = useState(new Set());
 
   function add() {
     if (groups.some(g => g.label.trim() === '')) return;
@@ -495,6 +473,9 @@ function GroupRows({ groups, setGroups, showLocation = false, showCities = false
   function addCity(i)        { setGroups(g => g.map((item, idx) => idx === i ? { ...item, cities: [...(item.cities || []), { name: '', id: '' }] } : item)); }
   function removeCity(i, ci) { setGroups(g => g.map((item, idx) => idx === i ? { ...item, cities: (item.cities || []).filter((_, x) => x !== ci) } : item)); }
   function updateCity(i, ci, key, val) { setGroups(g => g.map((item, idx) => idx === i ? { ...item, cities: (item.cities || []).map((c, x) => x === ci ? { ...c, [key]: val } : c) } : item)); }
+  function toggleCities(i) {
+    setExpandedCities(s => { const n = new Set(s); n.has(i) ? n.delete(i) : n.add(i); return n; });
+  }
 
   return (
     <div>
@@ -503,8 +484,12 @@ function GroupRows({ groups, setGroups, showLocation = false, showCities = false
           Aucun groupe configuré.
         </div>
       )}
-      {groups.map((g, i) => (
-        <div key={i} style={{ marginBottom: 8 }}>
+      {groups.map((g, i) => {
+        const cities = g.cities || [];
+        const cityCount = cities.length;
+        const citiesOpen = expandedCities.has(i) || cityCount > 0;
+        return (
+        <div key={i} style={{ marginBottom: showCities && g.location ? 12 : 8 }}>
           <div style={{ display: 'grid', gridTemplateColumns: showLocation ? '1fr auto 1.4fr auto' : '1fr 1.4fr auto', gap: 8, alignItems: 'center' }}>
           <input
             placeholder="Nom affiché *"
@@ -572,22 +557,96 @@ function GroupRows({ groups, setGroups, showLocation = false, showCities = false
           </div>
 
           {showCities && g.location && (
-            <div style={{ marginLeft: 24, marginTop: 6, paddingLeft: 10, borderLeft: '2px solid var(--border)' }}>
-              <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 5 }}>Villes (optionnel) — un groupe par ville</div>
-              {(g.cities || []).map((c, ci) => (
-                <div key={ci} style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr auto', gap: 8, marginBottom: 6, alignItems: 'center' }}>
-                  <input placeholder="Nom de la ville" value={c.name || ''} onChange={e => updateCity(i, ci, 'name', e.target.value)} />
-                  <input type="text" autoComplete="off" placeholder="Group Object ID" value={c.id || ''} onChange={e => updateCity(i, ci, 'id', e.target.value)} style={{ fontFamily: 'monospace', fontSize: 12, WebkitTextSecurity: c.id ? 'disc' : 'none' }} />
-                  <button type="button" onClick={() => removeCity(i, ci)} title="Supprimer la ville" style={{ background: 'transparent', border: '1px solid var(--border)', borderRadius: 6, width: 30, height: 34, cursor: 'pointer', color: 'var(--muted)', fontSize: 14, flexShrink: 0 }}>✕</button>
-                </div>
-              ))}
-              <button type="button" onClick={() => addCity(i)} style={{ marginTop: 2, background: 'transparent', border: '1px dashed var(--border)', borderRadius: 6, padding: '4px 12px', cursor: 'pointer', color: 'var(--muted)', fontSize: 11, display: 'flex', alignItems: 'center', gap: 5 }}>
-                <span style={{ fontSize: 14, lineHeight: 1 }}>+</span> Ajouter une ville
+            !citiesOpen ? (
+              <button
+                type="button"
+                onClick={() => toggleCities(i)}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                  marginTop: 7, marginLeft: 4,
+                  padding: '5px 14px 5px 10px', borderRadius: 20,
+                  border: '1px solid rgba(99,102,241,.4)',
+                  background: 'rgba(99,102,241,.09)',
+                  color: '#818cf8', cursor: 'pointer', fontSize: 11, fontWeight: 500,
+                  transition: 'background .15s, border-color .15s',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(99,102,241,.18)'; e.currentTarget.style.borderColor = 'rgba(99,102,241,.7)'; }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'rgba(99,102,241,.09)'; e.currentTarget.style.borderColor = 'rgba(99,102,241,.4)'; }}
+              >
+                <span style={{ fontSize: 14 }}>📍</span>
+                Ajouter des villes
               </button>
-            </div>
+            ) : (
+              <div style={{
+                marginTop: 8,
+                background: 'rgba(99,102,241,.04)',
+                border: '1px solid rgba(99,102,241,.18)',
+                borderRadius: 8,
+                padding: '10px 12px',
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: cityCount > 0 ? 10 : 6 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: 13 }}>📍</span>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: '#818cf8', textTransform: 'uppercase', letterSpacing: '.06em' }}>Villes</span>
+                    {cityCount > 0 && (
+                      <span style={{ fontSize: 11, fontWeight: 700, padding: '1px 7px', borderRadius: 10, background: 'rgba(99,102,241,.2)', color: '#818cf8' }}>
+                        {cityCount}
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => cityCount === 0 && toggleCities(i)}
+                    title={cityCount === 0 ? 'Fermer' : 'Supprimez toutes les villes pour fermer'}
+                    style={{ background: 'none', border: 'none', cursor: cityCount === 0 ? 'pointer' : 'default', color: 'var(--muted)', fontSize: 13, padding: '2px 4px', opacity: cityCount === 0 ? 0.7 : 0.25 }}
+                  >✕</button>
+                </div>
+
+                {cities.map((c, ci) => (
+                  <div key={ci} style={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr auto', gap: 6, marginBottom: 6, alignItems: 'center' }}>
+                    <input
+                      placeholder="Nom de la ville"
+                      value={c.name || ''}
+                      onChange={e => updateCity(i, ci, 'name', e.target.value)}
+                      style={{ height: 30, fontSize: 12, ...(c.name?.trim() === '' && c.id?.trim() ? { borderColor: 'rgba(239,68,68,.6)' } : {}) }}
+                    />
+                    <input
+                      type="text"
+                      autoComplete="off"
+                      placeholder="Group Object ID"
+                      value={c.id || ''}
+                      onChange={e => updateCity(i, ci, 'id', e.target.value)}
+                      style={{ fontFamily: 'monospace', fontSize: 11, height: 30, WebkitTextSecurity: c.id ? 'disc' : 'none', ...(c.id?.trim() === '' && c.name?.trim() ? { borderColor: 'rgba(239,68,68,.6)' } : {}) }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeCity(i, ci)}
+                      title="Supprimer"
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', fontSize: 18, padding: '0 6px', lineHeight: 1, opacity: 0.6 }}
+                    >×</button>
+                  </div>
+                ))}
+
+                <button
+                  type="button"
+                  onClick={() => addCity(i)}
+                  style={{
+                    marginTop: cityCount > 0 ? 4 : 0,
+                    padding: '4px 12px', borderRadius: 6,
+                    border: '1px dashed rgba(99,102,241,.4)',
+                    background: 'transparent', color: '#818cf8',
+                    cursor: 'pointer', fontSize: 11,
+                    display: 'inline-flex', alignItems: 'center', gap: 5,
+                  }}
+                >
+                  <span style={{ fontSize: 14, lineHeight: 1 }}>+</span> Ville
+                </button>
+              </div>
+            )
           )}
         </div>
-      ))}
+        );
+      })}
       {(() => {
         const blocked = groups.some(g => g.label.trim() === '');
         return (
@@ -780,47 +839,91 @@ function TabOrg({ locations, onLocationsChange }) {
     finally { setSaving(false); }
   }
 
+  const [activeSection, setActiveSection] = useState('global');
+
+  const NAV = [
+    { key: 'global',  iconPath: ['M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z', 'M2 12h20', 'M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z'], label: 'Globaux',      sub: 'Tous les employés',     count: globalGroups?.length },
+    { key: 'country', iconPath: ['M1 6v16l7-4 8 4 7-4V2l-7 4-8-4-7 4z', 'M8 2v16', 'M16 6v16'],                                                                                           label: 'Par pays',     sub: 'Selon la localisation', count: countryGroups?.length },
+    { key: 'comm',    iconPath: ['M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13.2 19.79 19.79 0 0 1 1.61 4.6 2 2 0 0 1 3.6 2.4h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.18 6.18l1.87-1.87a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z'], label: 'Communication', sub: 'Par département',       count: communicationGroups?.length },
+  ];
+
   if (globalGroups === null) return <div style={{ display: 'flex', justifyContent: 'center', padding: 60 }}><span className="spinner" /></div>;
+
+  const activeNav = NAV.find(n => n.key === activeSection);
 
   return (
     <form onSubmit={handleSave}>
       {error && <div className="error-box">{error}</div>}
       {saved && <div style={{ background: 'rgba(34,197,94,.12)', border: '1px solid rgba(34,197,94,.3)', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 13, color: 'var(--success)' }}>Paramètres enregistrés.</div>}
 
-      {/* Groupes globaux */}
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
-          <span style={{ fontSize: 18 }}>🌐</span>
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>Groupes globaux</div>
-            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>Ajoutés à tous les employés sans exception</div>
-          </div>
-        </div>
-        <GroupRows groups={globalGroups} setGroups={setGlobalGroups} />
-      </div>
+      <div className="card" style={{ padding: 0, overflow: 'hidden', marginBottom: 16 }}>
+        <div style={{ display: 'flex' }}>
 
-      {/* Groupes par pays */}
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
-          <span style={{ fontSize: 18 }}>🗺️</span>
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>Groupes par pays</div>
-            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>Ajoutés selon la localisation de l'employé</div>
+          {/* ── Panneau gauche : navigation ── */}
+          <div style={{ width: 210, flexShrink: 0, borderRight: '1px solid var(--border)', background: 'var(--surface2)', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ padding: '14px 16px 10px', fontSize: 11, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.07em', borderBottom: '1px solid var(--border)' }}>
+              Groupes
+            </div>
+            {NAV.map(s => {
+              const isActive = activeSection === s.key;
+              return (
+                <div
+                  key={s.key}
+                  onClick={() => setActiveSection(s.key)}
+                  style={{
+                    padding: '13px 16px', cursor: 'pointer',
+                    borderLeft: `3px solid ${isActive ? 'var(--primary)' : 'transparent'}`,
+                    background: isActive ? 'rgba(37,99,235,.1)' : 'transparent',
+                    borderBottom: '1px solid var(--border)',
+                    transition: 'background .1s',
+                  }}
+                  onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'rgba(255,255,255,.04)'; }}
+                  onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 3 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ display: 'flex', color: isActive ? 'var(--primary)' : 'var(--muted)' }}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          {(s.iconPath || []).map((d, i) => <path key={i} d={d} />)}
+                        </svg>
+                      </span>
+                      <span style={{ fontSize: 13, fontWeight: isActive ? 600 : 400, color: isActive ? 'var(--primary)' : 'var(--text)' }}>{s.label}</span>
+                    </div>
+                    {s.count != null && (
+                      <span style={{ fontSize: 11, fontWeight: 700, minWidth: 20, textAlign: 'center', padding: '1px 6px', borderRadius: 9, background: isActive ? 'rgba(37,99,235,.18)' : 'rgba(255,255,255,.08)', color: isActive ? 'var(--primary)' : 'var(--muted)' }}>
+                        {s.count}
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--muted)', marginLeft: 23 }}>{s.sub}</div>
+                </div>
+              );
+            })}
           </div>
-        </div>
-        <GroupRows groups={countryGroups} setGroups={setCountryGroups} showLocation={true} showCities={true} locations={locations} />
-      </div>
 
-      {/* Groupes de communication */}
-      <div className="card" style={{ marginBottom: 20 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
-          <span style={{ fontSize: 18 }}>📢</span>
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>Groupes de communication</div>
-            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>Assignation par département — 🌐 GBL = toutes les filiales</div>
+          {/* ── Panneau droit : contenu ── */}
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+            {/* Header section */}
+            <div style={{ padding: '14px 24px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ display: 'flex', color: 'var(--muted)' }}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  {(activeNav?.iconPath || []).map((d, i) => <path key={i} d={d} />)}
+                </svg>
+              </span>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>Groupes {activeNav?.label.toLowerCase()}</div>
+                <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 1 }}>{activeNav?.sub}</div>
+              </div>
+            </div>
+            {/* Content */}
+            <div style={{ padding: '20px 24px', overflowY: 'auto', maxHeight: 'calc(100vh - 320px)' }}>
+              {activeSection === 'global'  && <GroupRows groups={globalGroups}  setGroups={setGlobalGroups} />}
+              {activeSection === 'country' && <GroupRows groups={countryGroups} setGroups={setCountryGroups} showLocation showCities locations={locations} />}
+              {activeSection === 'comm'    && <CommGroupRows groups={communicationGroups} setGroups={setCommunicationGroups} locations={locations} allowedRoles={pointageRoles} />}
+            </div>
           </div>
+
         </div>
-        <CommGroupRows groups={communicationGroups} setGroups={setCommunicationGroups} locations={locations} allowedRoles={pointageRoles} />
       </div>
 
       <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
@@ -1535,12 +1638,354 @@ function TabPointage({ locations, onLocationsChange }) {
 
 // ─── Page principale ──────────────────────────────────────────────────────────
 
+// ─── TabSchemas ───────────────────────────────────────────────────────────────
+
+const PIPELINE_STEPS = [
+  {
+    number: 1,
+    key: null,
+    icon: '👤',
+    title: 'Création du compte Azure AD',
+    description: 'Crée l\'utilisateur dans Azure Active Directory avec son email, prénom, nom et localisation.',
+    required: true,
+  },
+  {
+    number: 2,
+    key: 'step2_group',
+    icon: '👥',
+    title: 'Ajout au groupe principal',
+    description: 'Ajoute l\'employé au groupe Microsoft 365 sélectionné lors de l\'onboarding.',
+    required: false,
+  },
+  {
+    number: 3,
+    key: 'step3_license',
+    icon: '🔑',
+    title: 'Assignation de la licence',
+    description: 'Assigne la licence Microsoft 365 choisie. Réessaie automatiquement si Exchange n\'est pas encore prêt.',
+    required: false,
+    hasConfig: true,
+  },
+  {
+    number: 4,
+    key: 'step4_sp_groups',
+    icon: '🌐',
+    title: 'Ajout aux groupes SharePoint & Communication',
+    description: 'Ajoute l\'employé à tous les groupes selon sa localisation, ses villes et son département.',
+    required: false,
+  },
+];
+
+function SchemaToggle({ enabled, onChange }) {
+  return (
+    <button
+      type="button"
+      onClick={onChange}
+      style={{
+        width: 42, height: 24, borderRadius: 12, border: 'none', cursor: 'pointer',
+        background: enabled ? 'var(--primary)' : 'rgba(255,255,255,.15)',
+        position: 'relative', flexShrink: 0, transition: 'background .2s',
+      }}
+    >
+      <span style={{
+        position: 'absolute', top: 3,
+        left: enabled ? 21 : 3,
+        width: 18, height: 18, borderRadius: '50%', background: '#fff',
+        transition: 'left .2s',
+        display: 'block',
+      }} />
+    </button>
+  );
+}
+
+function RetryDelaysEditor({ delays, onChange }) {
+  const [input, setInput] = useState(delays.join(', '));
+  const [err, setErr] = useState('');
+
+  function commit(val) {
+    const parts = val.split(',').map(s => s.trim()).filter(Boolean);
+    const nums = parts.map(Number);
+    if (nums.some(n => !Number.isInteger(n) || n < 1 || n > 600)) {
+      setErr('Entiers entre 1 et 600 uniquement');
+      return;
+    }
+    if (nums.length === 0 || nums.length > 10) {
+      setErr('Entre 1 et 10 valeurs');
+      return;
+    }
+    setErr('');
+    onChange(nums);
+  }
+
+  return (
+    <div style={{ marginTop: 12, padding: '10px 12px', background: 'rgba(37,99,235,.05)', borderRadius: 8, border: '1px solid rgba(37,99,235,.15)' }}>
+      <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '.4px' }}>
+        Délais de retry Exchange (secondes)
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
+        Séquence de délais en secondes avant chaque nouvelle tentative si Exchange n'est pas prêt. Ex : 15, 30, 60
+      </div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        {delays.map((d, i) => (
+          <span key={i} style={{ padding: '3px 10px', borderRadius: 12, background: 'rgba(37,99,235,.15)', color: 'var(--primary)', fontSize: 12, fontWeight: 600 }}>
+            {d}s
+          </span>
+        ))}
+      </div>
+      <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center' }}>
+        <input
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onBlur={e => commit(e.target.value)}
+          placeholder="15, 30, 45, 60, 90"
+          style={{ flex: 1, padding: '5px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: 12 }}
+        />
+        <button type="button" onClick={() => commit(input)} className="btn" style={{ padding: '5px 12px', fontSize: 11 }}>Appliquer</button>
+      </div>
+      {err && <div style={{ fontSize: 11, color: '#ef4444', marginTop: 4 }}>{err}</div>}
+    </div>
+  );
+}
+
+const NODE_COLORS = ['#2563eb', '#7c3aed', '#d97706', '#059669'];
+
+const STEP_DETAILS = [
+  [['Email', "Depuis le formulaire d'onboarding"], ['Prénom / Nom', 'Depuis le formulaire'], ['Localisation', 'Depuis le formulaire'], ['Mot de passe', 'Généré automatiquement']],
+  [['Groupe cible', "Sélectionné lors de l'onboarding"], ['Source', 'Onglet Groupes → Globaux']],
+  null,
+  [['Groupes globaux', 'Tous les employés'], ['Groupes par pays', 'Selon la localisation'], ['Groupes par ville', 'Selon la ville sélectionnée'], ['Groupes communication', 'Selon le département']],
+];
+
+function TabSchemas() {
+  const [schema, setSchema]             = useState(null);
+  const [saving, setSaving]             = useState(false);
+  const [saved, setSaved]               = useState(false);
+  const [error, setError]               = useState('');
+  const [selectedStep, setSelectedStep] = useState(null);
+
+  useEffect(() => { api.get('/api/admin/schema').then(setSchema).catch(() => {}); }, []);
+
+  function toggle(key) { setSchema(s => ({ ...s, [key]: { ...s[key], enabled: !s[key].enabled } })); }
+  function setRetryDelays(d) { setSchema(s => ({ ...s, step3_license: { ...s.step3_license, retry_delays: d } })); }
+  function handleSave() {
+    setSaving(true); setError('');
+    api.put('/api/admin/schema', schema)
+      .then(() => { setSaved(true); setTimeout(() => setSaved(false), 2500); })
+      .catch(e => setError(e.message || 'Erreur'))
+      .finally(() => setSaving(false));
+  }
+
+  if (!schema) return <div style={{ display: 'flex', justifyContent: 'center', padding: 48 }}><span className="spinner" /></div>;
+
+  function isEnabled(i) {
+    const s = PIPELINE_STEPS[i];
+    return s.required || schema[s.key]?.enabled !== false;
+  }
+
+  // Canvas geometry
+  const NW = 155, NH = 80, GAP = 68, PAD = 28, CH = 240;
+  const NY = Math.floor((CH - NH) / 2);
+  const PY = NY + NH / 2;
+  const CW = PAD + PIPELINE_STEPS.length * NW + (PIPELINE_STEPS.length - 1) * GAP + PAD;
+  function nx(i) { return PAD + i * (NW + GAP); }
+
+  const sel      = PIPELINE_STEPS.find(s => s.number === selectedStep) ?? null;
+  const selIdx   = sel ? PIPELINE_STEPS.indexOf(sel) : -1;
+  const selOn    = selIdx >= 0 ? isEnabled(selIdx) : false;
+  const selColor = sel ? NODE_COLORS[sel.number - 1] : '#2563eb';
+  const selDets  = sel ? STEP_DETAILS[sel.number - 1] : null;
+
+  return (
+    <div>
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>Pipeline d'onboarding</div>
+          <div style={{ fontSize: 12, color: 'var(--muted)' }}>Cliquez sur un nœud pour configurer l'étape</div>
+        </div>
+        <button onClick={handleSave} disabled={saving} className="btn btn-primary" style={{ minWidth: 152, justifyContent: 'center' }}>
+          {saved ? '✓ Enregistré' : saving ? 'Enregistrement...' : 'Enregistrer le schéma'}
+        </button>
+      </div>
+
+      {error && <div className="error-box" style={{ marginBottom: 14 }}>{error}</div>}
+
+      {/* Workspace: grid — canvas colonne 1fr, panel colonne fixe */}
+      <div style={{ display: 'grid', gridTemplateColumns: sel ? `1fr 380px` : '1fr', borderRadius: 14, overflow: 'hidden', border: '1px solid rgba(255,255,255,.07)', background: '#0c1017', backgroundImage: 'radial-gradient(rgba(255,255,255,.11) 1px, transparent 1px)', backgroundSize: '22px 22px' }}>
+
+        {/* Canvas */}
+        <div style={{ overflowX: 'auto', minHeight: CH }}>
+          <div
+            onClick={e => { if (e.currentTarget === e.target) setSelectedStep(null); }}
+            style={{ position: 'relative', width: CW, height: CH, userSelect: 'none' }}
+          >
+
+            {/* Hint when nothing selected */}
+            {!sel && (
+              <div style={{ position: 'absolute', bottom: 12, left: 0, right: 0, textAlign: 'center', fontSize: 10, color: 'rgba(255,255,255,.18)', pointerEvents: 'none' }}>
+                Cliquez sur un nœud pour ouvrir ses paramètres →
+              </div>
+            )}
+
+            {/* SVG bezier connections */}
+            <svg style={{ position: 'absolute', inset: 0, width: CW, height: CH, pointerEvents: 'none', overflow: 'visible' }}>
+              <defs>
+                <marker id="sc-arr-off" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+                  <path d="M0,0.5 L0,6.5 L6,3.5 z" fill="rgba(255,255,255,.15)" />
+                </marker>
+                <marker id="sc-arr-on" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+                  <path d="M0,0.5 L0,6.5 L6,3.5 z" fill="rgba(37,99,235,.85)" />
+                </marker>
+              </defs>
+              {PIPELINE_STEPS.slice(0, -1).map((_, i) => {
+                const x1 = nx(i) + NW + 5, x2 = nx(i + 1) - 5, cp = (x2 - x1) * 0.45;
+                const on = isEnabled(i) && isEnabled(i + 1);
+                return (
+                  <path key={i}
+                    d={`M ${x1} ${PY} C ${x1 + cp} ${PY}, ${x2 - cp} ${PY}, ${x2} ${PY}`}
+                    stroke={on ? 'rgba(37,99,235,.5)' : 'rgba(255,255,255,.08)'}
+                    strokeWidth={on ? 2.5 : 1.5} strokeDasharray={on ? 'none' : '5,4'}
+                    fill="none" markerEnd={on ? 'url(#sc-arr-on)' : 'url(#sc-arr-off)'}
+                  />
+                );
+              })}
+            </svg>
+
+            {/* Nodes */}
+            {PIPELINE_STEPS.map((step, i) => {
+              const enabled = isEnabled(i), color = NODE_COLORS[i], isSel = selectedStep === step.number;
+              return (
+                <div key={step.number}
+                  onClick={e => { e.stopPropagation(); setSelectedStep(isSel ? null : step.number); }}
+                  style={{
+                    position: 'absolute', left: nx(i), top: NY, width: NW, height: NH,
+                    background: isSel ? '#1c2540' : '#13191f',
+                    border: `1.5px solid ${isSel ? color : 'rgba(255,255,255,.1)'}`,
+                    borderRadius: 11, cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', gap: 10, padding: '0 14px 0 12px',
+                    opacity: enabled ? 1 : 0.32, transition: 'all .15s',
+                    boxShadow: isSel ? `0 0 0 3px ${color}30, 0 8px 28px rgba(0,0,0,.7)` : '0 2px 10px rgba(0,0,0,.5)',
+                  }}
+                >
+                  {i > 0 && <div style={{ position: 'absolute', left: -6, top: '50%', transform: 'translateY(-50%)', width: 12, height: 12, borderRadius: '50%', background: '#0c1017', border: `2px solid ${enabled ? color : 'rgba(255,255,255,.18)'}`, zIndex: 1 }} />}
+                  <div style={{ width: 40, height: 40, borderRadius: 10, flexShrink: 0, background: enabled ? `${color}1e` : 'rgba(255,255,255,.04)', border: `1.5px solid ${enabled ? `${color}50` : 'rgba(255,255,255,.07)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, transition: 'all .2s' }}>
+                    {step.icon}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, lineHeight: 1.25, marginBottom: 5, color: enabled ? '#dde4ef' : 'rgba(255,255,255,.25)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {step.title}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                      <div style={{ width: 6, height: 6, borderRadius: '50%', background: enabled ? '#22c55e' : 'rgba(255,255,255,.16)', flexShrink: 0 }} />
+                      <span style={{ fontSize: 10, fontWeight: 500, color: enabled ? '#22c55e' : 'rgba(255,255,255,.28)' }}>
+                        {step.required ? 'Requis' : enabled ? 'Actif' : 'Inactif'}
+                      </span>
+                    </div>
+                  </div>
+                  {i < PIPELINE_STEPS.length - 1 && <div style={{ position: 'absolute', right: -6, top: '50%', transform: 'translateY(-50%)', width: 12, height: 12, borderRadius: '50%', background: '#0c1017', border: `2px solid ${enabled ? color : 'rgba(255,255,255,.18)'}`, zIndex: 1 }} />}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Right panel — n8n-style, grid child, full natural height */}
+        {sel && (
+          <div style={{ background: '#111820', borderLeft: '1px solid rgba(255,255,255,.12)', display: 'flex', flexDirection: 'column' }}>
+
+            {/* Panel header */}
+            <div style={{ padding: '13px 13px 11px', borderBottom: '1px solid rgba(255,255,255,.07)', background: '#0e151e', display: 'flex', alignItems: 'center', gap: 9 }}>
+              <div style={{ width: 34, height: 34, borderRadius: 9, flexShrink: 0, background: `${selColor}20`, border: `1.5px solid ${selColor}50`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }}>
+                {sel.icon}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: '#dde4ef', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{sel.title}</div>
+                <div style={{ fontSize: 10, color: 'rgba(255,255,255,.32)', marginTop: 2 }}>Étape {sel.number} / {PIPELINE_STEPS.length}</div>
+              </div>
+              <button onClick={() => setSelectedStep(null)} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,.3)', fontSize: 14, padding: '3px 5px', borderRadius: 4, lineHeight: 1, flexShrink: 0 }}>✕</button>
+            </div>
+
+            {/* Panel body */}
+            <div style={{ flex: 1 }}>
+
+              {/* GÉNÉRAL */}
+              <div style={{ padding: '13px 13px 10px', borderBottom: '1px solid rgba(255,255,255,.05)' }}>
+                <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '.7px', textTransform: 'uppercase', color: 'rgba(255,255,255,.22)', marginBottom: 9 }}>Général</div>
+
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 11px', background: 'rgba(255,255,255,.04)', borderRadius: 8, border: '1px solid rgba(255,255,255,.07)', marginBottom: 9 }}>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#c9d1d9', marginBottom: 2 }}>Statut</div>
+                    <div style={{ fontSize: 10, color: selOn ? '#22c55e' : 'rgba(255,255,255,.28)' }}>
+                      {sel.required ? 'Toujours exécutée' : selOn ? 'Sera exécutée' : 'Sera ignorée'}
+                    </div>
+                  </div>
+                  {sel.required
+                    ? <span style={{ fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 6, background: `${selColor}20`, color: selColor, letterSpacing: '.3px' }}>REQUIS</span>
+                    : <SchemaToggle enabled={selOn} onChange={() => toggle(sel.key)} />
+                  }
+                </div>
+
+                <div style={{ fontSize: 11, color: 'rgba(255,255,255,.36)', lineHeight: 1.6, padding: '0 2px' }}>{sel.description}</div>
+              </div>
+
+              {/* PARAMÈTRES */}
+              <div style={{ padding: '13px 13px 10px' }}>
+                <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '.7px', textTransform: 'uppercase', color: 'rgba(255,255,255,.22)', marginBottom: 9 }}>Paramètres</div>
+
+                {selDets && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                    {selDets.map(([label, value]) => (
+                      <div key={label} style={{ padding: '7px 10px', background: 'rgba(255,255,255,.03)', borderRadius: 7, border: '1px solid rgba(255,255,255,.06)' }}>
+                        <div style={{ fontSize: 9, color: 'rgba(255,255,255,.28)', textTransform: 'uppercase', letterSpacing: '.4px', marginBottom: 3 }}>{label}</div>
+                        <div style={{ fontSize: 11, color: 'rgba(255,255,255,.55)' }}>{value}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {sel.number === 3 && (
+                  selOn
+                    ? <RetryDelaysEditor delays={schema.step3_license?.retry_delays || [15, 30, 45, 60, 90]} onChange={setRetryDelays} />
+                    : <div style={{ padding: '8px 10px', background: 'rgba(255,255,255,.03)', borderRadius: 7, border: '1px solid rgba(255,255,255,.06)', fontSize: 11, color: 'rgba(255,255,255,.28)', fontStyle: 'italic' }}>
+                        Activez cette étape pour configurer les paramètres.
+                      </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Tabs ─────────────────────────────────────────────────────────────────────
+
+function TabIcon({ id }) {
+  const paths = {
+    users:      [['M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2', 'M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z'], 'M23 21v-2a4 4 0 0 0-3-3.87', 'M16 3.13a4 4 0 0 1 0 7.75'],
+    onboarding: [['M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2', 'M12 8L6.7 13.3c-1.1 1.1-1.1 2.9 0 4L12 22l10-10-4.7-4.7c-1.1-1.1-2.9-1.1-4 0L8 12', 'M22 2L13.4 10.6', 'M15 2H22V9']],
+    api:        [['M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71'], ['M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71']],
+    org:        [['M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z']],
+    pointage:   [['M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z', 'M12 10a3 3 0 1 0 0-6 3 3 0 0 0 0 6z']],
+    schema:     [['M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7'], ['M18.375.375a2.121 2.121 0 1 1 3 3L12 12l-4 1 1-4z']],
+  };
+  const path = paths[id] || paths.org;
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {path.flat().map((d, i) => <path key={i} d={d} />)}
+    </svg>
+  );
+}
+
 const TABS = [
-  { id: 'users',      label: 'Utilisateurs', icon: '👥' },
-  { id: 'onboarding', label: 'Onboarding',   icon: '🚀' },
-  { id: 'api',        label: 'API',          icon: '🔌' },
-  { id: 'org',        label: 'Groupes',      icon: '📁' },
-  { id: 'pointage',   label: 'Pointage',     icon: '📍' },
+  { id: 'users',      label: 'Utilisateurs' },
+  { id: 'onboarding', label: 'Onboarding'   },
+  { id: 'api',        label: 'API'           },
+  { id: 'org',        label: 'Groupes'       },
+  { id: 'pointage',   label: 'Pointage'      },
+  { id: 'schema',     label: 'Schémas'       },
 ];
 
 const DEFAULT_LOCATIONS = [
@@ -1552,6 +1997,8 @@ const DEFAULT_LOCATIONS = [
   { code: 'IND', name: 'India',           flag: '🇮🇳' },
   { code: 'CA',  name: 'Canada',          flag: '🇨🇦' },
 ];
+
+// ─── Admin page ───────────────────────────────────────────────────────────────
 
 export default function Admin() {
   const { user: me } = useUser();
@@ -1566,34 +2013,61 @@ export default function Admin() {
 
   return (
     <div>
-      <div className="page-header">
-        <h1 className="page-title">Administration</h1>
+      {/* Hero header */}
+      <div style={{ marginBottom: 22, position: 'relative' }}>
+        <div aria-hidden="true" style={{
+          position: 'absolute', top: -24, left: '5%', width: 300, height: 100,
+          background: 'radial-gradient(ellipse, rgba(245,158,11,.08) 0%, transparent 70%)',
+          pointerEvents: 'none', filter: 'blur(20px)',
+        }} />
+        <div style={{ position: 'relative' }}>
+          <div style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6, marginBottom: 8,
+            padding: '3px 10px', borderRadius: 999,
+            border: '1px solid rgba(245,158,11,.2)', background: 'rgba(245,158,11,.06)',
+          }}>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            <span style={{ fontSize: 11, color: 'rgba(245,158,11,.7)', fontWeight: 500, letterSpacing: '.3px' }}>Administration</span>
+          </div>
+          <h1 style={{
+            fontSize: 24, fontWeight: 800, letterSpacing: '-0.03em',
+            background: 'linear-gradient(to bottom, #ffffff 35%, rgba(255,255,255,.4))',
+            WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
+          }}>
+            Administration
+          </h1>
+        </div>
       </div>
 
       {/* Tabs */}
-      <div style={{ display: 'flex', gap: 4, marginBottom: 24, borderBottom: '1px solid var(--border)', paddingBottom: 0 }}>
+      <div style={{ display: 'flex', gap: 2, marginBottom: 24, borderBottom: '1px solid var(--border)', paddingBottom: 0 }}>
         {TABS.map(tab => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
             style={{
-              background: 'transparent',
+              background: activeTab === tab.id ? 'rgba(79,70,229,.08)' : 'transparent',
               border: 'none',
               borderBottom: `2px solid ${activeTab === tab.id ? 'var(--primary)' : 'transparent'}`,
-              padding: '8px 18px',
+              padding: '9px 16px',
               cursor: 'pointer',
               fontSize: 13,
               fontWeight: activeTab === tab.id ? 600 : 400,
               color: activeTab === tab.id ? 'var(--text)' : 'var(--muted)',
               display: 'flex',
               alignItems: 'center',
-              gap: 7,
+              gap: 6,
               marginBottom: -1,
-              borderRadius: '4px 4px 0 0',
-              transition: 'color .15s',
+              borderRadius: '6px 6px 0 0',
+              transition: 'color .15s, background .15s',
+              fontFamily: 'inherit',
             }}
+            onMouseEnter={e => { if (activeTab !== tab.id) { e.currentTarget.style.color = 'var(--text2)'; e.currentTarget.style.background = 'rgba(255,255,255,.03)'; } }}
+            onMouseLeave={e => { if (activeTab !== tab.id) { e.currentTarget.style.color = 'var(--muted)'; e.currentTarget.style.background = 'transparent'; } }}
+            onFocus={e => { e.currentTarget.style.outline = '2px solid var(--primary)'; e.currentTarget.style.outlineOffset = '-2px'; }}
+            onBlur={e => { e.currentTarget.style.outline = 'none'; }}
           >
-            <span>{tab.icon}</span>
+            <TabIcon id={tab.id} />
             {tab.label}
           </button>
         ))}
@@ -1604,6 +2078,7 @@ export default function Admin() {
       {activeTab === 'api'        && <TabAPI />}
       {activeTab === 'org'        && <TabOrg locations={locations} onLocationsChange={setLocations} />}
       {activeTab === 'pointage'   && <TabPointage locations={locations} onLocationsChange={setLocations} />}
+      {activeTab === 'schema'     && <TabSchemas />}
     </div>
   );
 }

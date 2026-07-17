@@ -21,9 +21,18 @@ async function copyText(text) {
 
 const STEP_NAMES = ['Employé', 'Groupe', 'Licence', 'Exécution'];
 
+function CheckIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
+
 function StepIndicator({ current }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 0, marginBottom: 32 }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 0, marginBottom: 28 }}>
       {STEP_NAMES.map((name, i) => {
         const n = i + 1;
         const done   = current > n;
@@ -37,16 +46,18 @@ function StepIndicator({ current }) {
                 border: `2px solid ${done ? 'var(--success)' : active ? 'var(--primary)' : 'var(--border)'}`,
                 color: (done || active) ? '#fff' : 'var(--muted)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: 13, fontWeight: 700,
+                fontSize: 12, fontWeight: 700,
+                boxShadow: active ? '0 0 0 4px var(--primary-soft)' : 'none',
+                transition: 'all .2s',
               }}>
-                {done ? '✓' : n}
+                {done ? <CheckIcon /> : n}
               </div>
               <span style={{ fontSize: 12, fontWeight: active ? 600 : 400, color: active ? 'var(--text)' : done ? 'var(--success)' : 'var(--muted)' }}>
                 {name}
               </span>
             </div>
             {i < STEP_NAMES.length - 1 && (
-              <div style={{ flex: 1, height: 2, background: done ? 'var(--success)' : 'var(--border)', margin: '0 12px', opacity: .5 }} />
+              <div style={{ flex: 1, height: 2, background: done ? 'var(--success)' : 'var(--border)', margin: '0 12px', borderRadius: 99, opacity: done ? .6 : .3 }} />
             )}
           </div>
         );
@@ -56,44 +67,73 @@ function StepIndicator({ current }) {
 }
 
 const EXEC_STEP_NAMES = ['Création du compte Azure AD', 'Ajout au groupe principal', 'Assignation de la licence', 'Ajout aux groupes SharePoint & communication'];
-const EXEC_ICONS = { pending: '⏸', running: '⏳', done: '✅', failed: '❌' };
+
+const EXEC_ICON_PATHS = {
+  pending: 'M6 4h4v16H6z M14 4h4v16h-4z',
+  running: ['M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z', 'M12 6v6l4 2'],
+  done:    ['M22 11.08V12a10 10 0 1 1-5.93-9.14', 'M22 4 12 14.01l-3-3'],
+  failed:  ['M18 6 6 18', 'M6 6l12 12'],
+};
+const EXEC_COLORS = {
+  pending: 'var(--border)',
+  running: 'var(--info)',
+  done:    'var(--success)',
+  failed:  'var(--danger)',
+};
+const EXEC_BG = {
+  pending: 'transparent',
+  running: 'rgba(96,165,250,.1)',
+  done:    'rgba(34,197,94,.1)',
+  failed:  'rgba(239,68,68,.1)',
+};
+
+function ExecStep({ step }) {
+  const iconPath = EXEC_ICON_PATHS[step.status] || EXEC_ICON_PATHS.pending;
+  const color    = EXEC_COLORS[step.status] || EXEC_COLORS.pending;
+  const bg       = EXEC_BG[step.status]     || EXEC_BG.pending;
+  const isRunning = step.status === 'running';
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+      <div style={{
+        width: 32, height: 32, borderRadius: '50%', flexShrink: 0,
+        border: `2px solid ${color}`,
+        background: bg,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        color, transition: 'all .2s',
+      }} className={isRunning ? 'pulse' : ''}>
+        {isRunning
+          ? <span className="spinner" style={{ width: 14, height: 14 }} />
+          : <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              {Array.isArray(iconPath)
+                ? iconPath.map((d, i) => <path key={i} d={d} />)
+                : <path d={iconPath} />}
+            </svg>}
+      </div>
+      <div style={{ flex: 1, paddingTop: 6 }}>
+        <div style={{
+          fontWeight: isRunning ? 600 : 400,
+          color: step.status === 'done' ? 'var(--success)' : step.status === 'failed' ? 'var(--danger)' : isRunning ? 'var(--text)' : 'var(--muted)',
+          fontSize: 13,
+        }}>
+          {step.step_name}
+        </div>
+        {step.error_message && (
+          <div style={{ fontSize: 11, color: 'var(--danger)', marginTop: 4, lineHeight: 1.5 }}>{step.error_message}</div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function ExecProgress({ onboarding }) {
   const steps = onboarding?.steps || [];
+  const list  = steps.length
+    ? steps
+    : EXEC_STEP_NAMES.map((name, i) => ({ step_number: i + 1, step_name: name, status: 'pending' }));
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, margin: '24px 0' }}>
-      {(steps.length ? steps : EXEC_STEP_NAMES.map((name, i) => ({ step_number: i + 1, step_name: name, status: 'pending' }))).map((step, i) => (
-        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          <div style={{
-            width: 34, height: 34, borderRadius: '50%',
-            border: `2px solid ${
-              step.status === 'done'    ? 'var(--success)' :
-              step.status === 'failed'  ? 'var(--danger)'  :
-              step.status === 'running' ? 'var(--info)'    : 'var(--border)'
-            }`,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 16, flexShrink: 0,
-          }} className={step.status === 'running' ? 'pulse' : ''}>
-            {EXEC_ICONS[step.status] || '⏸'}
-          </div>
-          <div style={{ flex: 1 }}>
-            <div style={{
-              fontWeight: step.status === 'running' ? 600 : 400,
-              color: step.status === 'done'    ? 'var(--success)' :
-                     step.status === 'failed'  ? 'var(--danger)'  :
-                     step.status === 'running' ? 'var(--text)'    : 'var(--muted)',
-              fontSize: 14,
-            }}>
-              [{step.step_number}/4] {step.step_name}
-            </div>
-            {step.error_message && (
-              <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 4 }}>{step.error_message}</div>
-            )}
-          </div>
-          {step.status === 'running' && <span className="spinner" style={{ width: 16, height: 16 }} />}
-          {step.status === 'done'    && <span style={{ color: 'var(--success)', fontWeight: 700, fontSize: 13 }}>OK</span>}
-        </div>
-      ))}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14, margin: '20px 0' }}>
+      {list.map((step, i) => <ExecStep key={i} step={step} />)}
     </div>
   );
 }
@@ -151,9 +191,11 @@ function RoleCombobox({ value, onChange }) {
           style={{ paddingRight: 30 }}
         />
         <span
-          style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--muted)', fontSize: 11, pointerEvents: 'none', cursor: 'default' }}
+          style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--muted)', fontSize: 11, pointerEvents: 'none', cursor: 'default', display: 'flex' }}
           onMouseDown={e => { e.preventDefault(); setOpen(o => !o); setSearch(''); }}
-        >▾</span>
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }}><path d="M6 9l6 6 6-6" /></svg>
+        </span>
       </div>
 
       {open && (
@@ -194,7 +236,7 @@ function RoleCombobox({ value, onChange }) {
   );
 }
 
-function CopyButton({ text }) {
+function CopyButton({ text, inline = false }) {
   const [copied, setCopied] = useState(false);
   function handle() {
     copyText(text).then(() => {
@@ -202,28 +244,42 @@ function CopyButton({ text }) {
       setTimeout(() => setCopied(false), 2000);
     }).catch(() => {});
   }
+  if (inline) {
+    return (
+      <button onClick={handle} title={copied ? 'Copié !' : 'Copier'}
+        style={{
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          width: 28, height: 28, borderRadius: 6, cursor: 'pointer', flexShrink: 0,
+          background: copied ? 'rgba(34,197,94,.12)' : 'rgba(148,163,184,.06)',
+          border: `1px solid ${copied ? 'rgba(34,197,94,.3)' : 'rgba(148,163,184,.12)'}`,
+          color: copied ? '#22c55e' : 'var(--muted)',
+          transition: 'all .18s',
+        }}
+        onMouseEnter={e => { if (!copied) { e.currentTarget.style.background = 'rgba(148,163,184,.12)'; e.currentTarget.style.color = 'var(--text)'; }}}
+        onMouseLeave={e => { if (!copied) { e.currentTarget.style.background = 'rgba(148,163,184,.06)'; e.currentTarget.style.color = 'var(--muted)'; }}}
+      >
+        {copied
+          ? <svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true" style={{ fill: 'none', stroke: 'currentColor', strokeWidth: 2.5, strokeLinecap: 'round', strokeLinejoin: 'round' }}><path d="M20 6 9 17l-5-5"/></svg>
+          : <svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true" style={{ fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' }}><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        }
+      </button>
+    );
+  }
   return (
-    <button
-      onClick={handle}
-      title={copied ? 'Copié !' : 'Copier'}
+    <button onClick={handle} title={copied ? 'Copié !' : 'Copier'}
       style={{
-        position: 'absolute', top: 8, right: 8,
-        background: copied ? 'var(--success)' : 'var(--surface)',
-        border: `1px solid ${copied ? 'var(--success)' : 'var(--border)'}`,
-        borderRadius: 6,
-        padding: '3px 7px',
-        cursor: 'pointer',
-        fontSize: 14,
-        lineHeight: 1,
-        transition: 'background .2s, border-color .2s',
+        display: 'inline-flex', alignItems: 'center', gap: 6,
+        padding: '7px 14px', borderRadius: 7, cursor: 'pointer', fontSize: 12, fontWeight: 600,
+        background: copied ? 'rgba(34,197,94,.1)' : 'rgba(148,163,184,.06)',
+        border: `1px solid ${copied ? 'rgba(34,197,94,.3)' : 'rgba(148,163,184,.15)'}`,
+        color: copied ? '#22c55e' : 'var(--muted)',
+        transition: 'all .18s',
       }}
     >
-      {copied ? '✓' : (
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="9" y="9" width="13" height="13" rx="2"/>
-          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-        </svg>
-      )}
+      {copied
+        ? <><svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true" style={{ fill: 'none', stroke: 'currentColor', strokeWidth: 2.5, strokeLinecap: 'round', strokeLinejoin: 'round' }}><path d="M20 6 9 17l-5-5"/></svg> Copié</>
+        : <><svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true" style={{ fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' }}><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copier tout</>
+      }
     </button>
   );
 }
@@ -257,9 +313,11 @@ function LocationCombobox({ value, onChange, locations = [] }) {
           style={{ paddingRight: 30 }}
         />
         <span
-          style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--muted)', fontSize: 11, pointerEvents: 'none' }}
+          style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--muted)', pointerEvents: 'none', display: 'flex' }}
           onMouseDown={e => { e.preventDefault(); setOpen(o => !o); setSearch(''); }}
-        >▾</span>
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }}><path d="M6 9l6 6 6-6" /></svg>
+        </span>
       </div>
       {open && (
         <div style={{
@@ -340,6 +398,7 @@ export default function NewOnboarding() {
   const [deptAssignments, setDeptAssignments]       = useState([]);
   const [pointageCommAssign, setPointageCommAssign] = useState([]);
   const [showAllGlobal, setShowAllGlobal]     = useState(false);
+  const [forceChangePwd, setForceChangePwd]   = useState(true); // true = temporaire (défaut sécurisé)
 
   // Groupe
   const [autoGroup, setAutoGroup]         = useState(null);
@@ -361,22 +420,37 @@ export default function NewOnboarding() {
 
   // Sécurité : vérification mot de passe avant lancement
   const [revealState, setRevealState]     = useState('locked'); // locked | revealed
-  const [launchState, setLaunchState]     = useState('idle');   // idle | confirming
+  const [launchState, setLaunchState]     = useState('idle');   // idle | confirming | countdown
   const [verifyPwd, setVerifyPwd]         = useState('');
   const [verifyError, setVerifyError]     = useState('');
   const [verifyLoading, setVerifyLoading] = useState(false);
+  const [countdown, setCountdown]         = useState(3);
+  const [launchPasswordSet, setLaunchPasswordSet] = useState(false);
+
+  function startCountdown() {
+    setCountdown(3);
+    setLaunchState('countdown');
+    let n = 3;
+    const tick = setInterval(() => {
+      n -= 1;
+      setCountdown(n);
+      if (n <= 0) {
+        clearInterval(tick);
+        handleSubmit();
+      }
+    }, 1000);
+  }
 
   async function handleLaunch() {
     setVerifyError('');
     setVerifyLoading(true);
     try {
       await api.post('/api/auth/verify-launch-password', { password: verifyPwd });
-      setLaunchState('idle');
       setVerifyPwd('');
-      await handleSubmit();
+      setVerifyLoading(false);
+      startCountdown();
     } catch (e) {
       setVerifyError(e.message || 'Mot de passe incorrect');
-    } finally {
       setVerifyLoading(false);
     }
   }
@@ -398,6 +472,8 @@ export default function NewOnboarding() {
       setDeptAssignments((data.department_assignments || []).filter(g => g.id));
       setPointageCommAssign((data.pointage_comm_assignments || []).filter(g => g.id && g.department && g.location));
       if (Array.isArray(data.locations) && data.locations.length > 0) setLocations(data.locations);
+      if (data.force_change_password !== undefined) setForceChangePwd(data.force_change_password === 'true');
+      setLaunchPasswordSet(!!data.launch_password_set);
     }).catch(() => {});
   }, []);
 
@@ -549,8 +625,32 @@ export default function NewOnboarding() {
 
   return (
     <div style={{ maxWidth: 680, margin: '0 auto' }}>
-      <div className="page-header">
-        <h1 className="page-title">Nouvel onboarding</h1>
+      {/* Hero header */}
+      <div style={{ marginBottom: 24, position: 'relative' }}>
+        <div aria-hidden="true" style={{
+          position: 'absolute', top: -30, left: '5%', width: 350, height: 120,
+          background: 'radial-gradient(ellipse, rgba(79,70,229,.1) 0%, transparent 70%)',
+          pointerEvents: 'none', filter: 'blur(24px)',
+        }} />
+        <div style={{ position: 'relative' }}>
+          <div style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6, marginBottom: 10,
+            padding: '4px 12px', borderRadius: 999,
+            border: '1px solid rgba(79,70,229,.2)', background: 'rgba(79,70,229,.06)',
+          }}>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2" /><path d="M12 8L6.7 13.3c-1.1 1.1-1.1 2.9 0 4L12 22l10-10-4.7-4.7c-1.1-1.1-2.9-1.1-4 0L8 12" /><path d="M22 2L13.4 10.6" /><path d="M15 2H22V9" />
+            </svg>
+            <span style={{ fontSize: 11, color: 'rgba(99,102,241,.7)', fontWeight: 500, letterSpacing: '.3px' }}>Onboarding</span>
+          </div>
+          <h1 style={{
+            fontSize: 26, fontWeight: 800, letterSpacing: '-0.03em',
+            background: 'linear-gradient(to bottom, #ffffff 35%, rgba(255,255,255,.4))',
+            WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
+          }}>
+            Nouvel onboarding
+          </h1>
+        </div>
       </div>
 
       <StepIndicator current={step} />
@@ -608,14 +708,17 @@ export default function NewOnboarding() {
                         display: 'flex', alignItems: 'center', paddingLeft: 12,
                         fontSize: 12, color: 'var(--muted)', gap: 6,
                       }}>
-                        <span>🌍</span> Rôle global — sans localisation
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                        Rôle global — sans localisation
                       </div>
                     </div>
                   )}
                 </div>
 
-                <div style={{ background: 'var(--surface2)', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 12, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span>💡</span>
+                <div style={{ background: 'var(--surface2)', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 12, color: 'var(--muted)', display: 'flex', alignItems: 'flex-start', gap: 8, borderLeft: '2px solid var(--border)' }}>
+                  <span style={{ display: 'flex', flexShrink: 0, marginTop: 1, color: '#60a5fa' }}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+                  </span>
                   {isGlobal ? (
                     <div>
                       Rôle global : <strong style={{ color: 'var(--text2)' }}>{form.jobRole}</strong>
@@ -734,8 +837,10 @@ export default function NewOnboarding() {
                 <div style={{
                   width: 36, height: 36, borderRadius: '50%',
                   background: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 16, flexShrink: 0,
-                }}>✓</div>
+                  flexShrink: 0, color: '#fff',
+                }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+                </div>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--text)' }}>{autoGroup.displayName}</div>
                   {autoGroup.description && <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>{autoGroup.description}</div>}
@@ -818,7 +923,9 @@ export default function NewOnboarding() {
               {showAllGlobal ? (
                 spGlobalGroups.map(g => (
                   <div key={g.id} style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--surface2)', display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
-                    <div style={{ width: 22, height: 22, borderRadius: '50%', background: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 12, flexShrink: 0 }}>✓</div>
+                    <div style={{ width: 22, height: 22, borderRadius: '50%', background: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', flexShrink: 0 }}>
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+                    </div>
                     <div style={{ flex: 1, fontSize: 13, color: 'var(--text)' }}>{g.label}</div>
                   </div>
                 ))
@@ -901,8 +1008,48 @@ export default function NewOnboarding() {
         </div>
       )}
 
+      {/* ── Step 3: Countdown overlay ── */}
+      {step === 3 && launchState === 'countdown' && (
+        <div className="card" style={{
+          minHeight: 280, display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center', gap: 20,
+          background: countdown === 0
+            ? 'rgba(34,197,94,.05)'
+            : 'rgba(79,70,229,.04)',
+          border: `1px solid ${countdown === 0 ? 'rgba(34,197,94,.2)' : 'var(--border)'}`,
+          transition: 'background .4s, border-color .4s',
+        }}>
+          <div key={countdown} style={{
+            width: 120, height: 120, borderRadius: '50%',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: countdown === 0 ? 'rgba(34,197,94,.15)' : 'rgba(79,70,229,.12)',
+            border: `3px solid ${countdown === 0 ? 'rgba(34,197,94,.5)' : 'rgba(79,70,229,.4)'}`,
+            boxShadow: countdown === 0
+              ? '0 0 48px rgba(34,197,94,.35)'
+              : '0 0 48px rgba(79,70,229,.3)',
+            fontSize: countdown === 0 ? 28 : 56,
+            fontWeight: 800,
+            color: countdown === 0 ? '#22c55e' : 'var(--text)',
+            letterSpacing: '-2px',
+            animation: 'countdownPop .4s cubic-bezier(.175,.885,.32,1.275)',
+          }}>
+            {countdown === 0 ? 'Go !' : countdown}
+          </div>
+          <div style={{ fontSize: 14, color: 'var(--muted)', fontWeight: 500 }}>
+            {countdown === 0 ? 'Lancement en cours…' : 'Lancement dans…'}
+          </div>
+          <style>{`
+            @keyframes countdownPop {
+              0%   { transform: scale(.3); opacity: 0; }
+              70%  { transform: scale(1.15); }
+              100% { transform: scale(1);   opacity: 1; }
+            }
+          `}</style>
+        </div>
+      )}
+
       {/* ── Step 3: Licence + Récapitulatif ── */}
-      {step === 3 && (
+      {step === 3 && launchState !== 'countdown' && (
         <div className="card">
           <h2 style={{ fontSize: 15, fontWeight: 600, marginBottom: 16, color: 'var(--text)' }}>Sélectionner une licence</h2>
 
@@ -1021,10 +1168,48 @@ export default function NewOnboarding() {
             );
           })()}
 
-          {launchState === 'confirming' ? (
+          {launchState === 'countdown' ? (
+            <div style={{
+              marginTop: 8, borderRadius: 12,
+              background: 'var(--surface2)', border: '1px solid var(--border)',
+              padding: '32px 24px',
+              display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12,
+            }}>
+              <div key={countdown} style={{
+                width: 88, height: 88, borderRadius: '50%',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: countdown === 0
+                  ? 'rgba(34,197,94,.15)'
+                  : 'rgba(79,70,229,.12)',
+                border: `3px solid ${countdown === 0 ? 'rgba(34,197,94,.5)' : 'rgba(79,70,229,.4)'}`,
+                boxShadow: countdown === 0
+                  ? '0 0 32px rgba(34,197,94,.3)'
+                  : '0 0 32px rgba(79,70,229,.25)',
+                fontSize: countdown === 0 ? 22 : 42,
+                fontWeight: 800,
+                color: countdown === 0 ? '#22c55e' : 'var(--text)',
+                letterSpacing: countdown === 0 ? '-.5px' : '-2px',
+                animation: 'countdownPop .35s cubic-bezier(.175,.885,.32,1.275)',
+                transition: 'background .3s, border-color .3s, box-shadow .3s',
+              }}>
+                {countdown === 0 ? 'Go !' : countdown}
+              </div>
+              <div style={{ fontSize: 13, color: 'var(--muted)', fontWeight: 500 }}>
+                {countdown === 0 ? 'Lancement en cours…' : 'Lancement dans…'}
+              </div>
+              <style>{`
+                @keyframes countdownPop {
+                  0%   { transform: scale(.5); opacity: 0; }
+                  70%  { transform: scale(1.12); }
+                  100% { transform: scale(1);   opacity: 1; }
+                }
+              `}</style>
+            </div>
+          ) : launchState === 'confirming' ? (
             <div style={{ background: 'var(--surface2)', borderRadius: 8, padding: '14px 16px', marginTop: 8 }}>
               <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
-                🔐 Confirmez votre mot de passe pour lancer l'onboarding
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                Confirmez votre mot de passe pour lancer l'onboarding
               </div>
               {verifyError && (
                 <div style={{ marginBottom: 10, padding: '8px 12px', background: 'rgba(239,68,68,.12)', border: '1px solid rgba(239,68,68,.3)', borderRadius: 6, fontSize: 13, color: 'var(--danger)' }}>
@@ -1051,7 +1236,7 @@ export default function NewOnboarding() {
                 >
                   {verifyLoading
                     ? <><span className="spinner" style={{ width: 14, height: 14 }} /> Vérification...</>
-                    : '🚀 Lancer l\'onboarding'}
+                    : <><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{marginRight:4}} aria-hidden="true"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2"/><path d="M12 8L6.7 13.3c-1.1 1.1-1.1 2.9 0 4L12 22l10-10-4.7-4.7c-1.1-1.1-2.9-1.1-4 0L8 12"/><path d="M22 2L13.4 10.6"/><path d="M15 2H22V9"/></svg> Lancer l'onboarding</>}
                 </button>
               </div>
             </div>
@@ -1061,10 +1246,11 @@ export default function NewOnboarding() {
               <button
                 className="btn btn-primary"
                 disabled={!selectedLicense || loading}
-                onClick={() => { setError(''); setLaunchState('confirming'); }}
+                onClick={() => { setError(''); if (launchPasswordSet) { setLaunchState('confirming'); } else { startCountdown(); } }}
                 style={{ minWidth: 160, justifyContent: 'center' }}
               >
-                🚀 Lancer l'onboarding
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2"/><path d="M12 8L6.7 13.3c-1.1 1.1-1.1 2.9 0 4L12 22l10-10-4.7-4.7c-1.1-1.1-2.9-1.1-4 0L8 12"/><path d="M22 2L13.4 10.6"/><path d="M15 2H22V9"/></svg>
+                Lancer l'onboarding
               </button>
             </div>
           )}
@@ -1092,10 +1278,13 @@ export default function NewOnboarding() {
         <div className="card">
           {onboarding.status === 'done' ? (
             <div style={{ textAlign: 'center', padding: '16px 0' }}>
-              <div style={{ fontSize: 48, marginBottom: 16 }}>🎉</div>
+              <div style={{ width: 56, height: 56, borderRadius: 16, background: 'rgba(34,197,94,.12)', border: '1px solid rgba(34,197,94,.25)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px', color: '#22c55e' }}>
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4 12 14.01l-3-3"/></svg>
+              </div>
               <h2 style={{ fontSize: 18, fontWeight: 700, color: 'var(--success)', marginBottom: 8 }}>Onboarding terminé !</h2>
               <p style={{ color: 'var(--text2)', fontSize: 14, marginBottom: 4 }}>
                 <strong>{form.firstName} {form.lastName}</strong> est maintenant dans Microsoft 365.
+                {forceChangePwd && <>{' '}<span style={{ fontSize: 13, color: 'var(--muted)' }}>Le mot de passe devra être changé à la première connexion.</span></>}
               </p>
 
               {(oneTimePwdRef.current || onboarding.employee_email) && (
@@ -1104,7 +1293,9 @@ export default function NewOnboarding() {
                   {/* État : verrouillé */}
                   {revealState === 'locked' && (
                     <div style={{ padding: '22px 18px', textAlign: 'center', background: 'var(--surface2)' }}>
-                      <div style={{ fontSize: 30, marginBottom: 8 }}>🔒</div>
+                      <div style={{ width: 44, height: 44, borderRadius: 12, background: 'var(--surface3)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 8px', color: 'var(--muted)' }}>
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                    </div>
                       <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 14 }}>
                         Identifiants M365 disponibles
                       </div>
@@ -1117,23 +1308,101 @@ export default function NewOnboarding() {
                   {/* État : révélé */}
                   {revealState === 'revealed' && (() => {
                     const displayName = `${form.firstName} ${form.lastName}`;
-                    const credText = `Display Name : ${displayName}\nEmail : ${onboarding.employee_email || ''}\nPassword : ${oneTimePwdRef.current || ''}`;
+                    const email = onboarding.employee_email || '';
+                    const pwd = oneTimePwdRef.current || '';
+                    const credText = `Display Name : ${displayName}\nEmail : ${email}\nPassword : ${pwd}`;
+
+                    const rows = [
+                      {
+                        icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" style={{ stroke: 'currentColor', strokeWidth: 1.75, strokeLinecap: 'round', strokeLinejoin: 'round' }}><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>,
+                        label: 'Nom complet',
+                        value: displayName,
+                        mono: false,
+                      },
+                      {
+                        icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" style={{ stroke: 'currentColor', strokeWidth: 1.75, strokeLinecap: 'round', strokeLinejoin: 'round' }}><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><path d="M22 6l-10 7L2 6"/></svg>,
+                        label: 'Email M365',
+                        value: email,
+                        mono: true,
+                      },
+                      {
+                        icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" style={{ stroke: 'currentColor', strokeWidth: 1.75, strokeLinecap: 'round', strokeLinejoin: 'round' }}><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>,
+                        label: 'Mot de passe temporaire',
+                        value: pwd,
+                        mono: true,
+                        highlight: true,
+                      },
+                    ];
+
                     return (
-                      <div style={{ position: 'relative' }}>
-                        <pre style={{
-                          margin: 0,
-                          padding: '14px 44px 14px 16px',
-                          background: 'var(--surface2)',
-                          border: '1px solid var(--border)',
-                          borderRadius: 8,
-                          fontSize: 13,
-                          color: 'var(--text)',
-                          fontFamily: 'monospace',
-                          lineHeight: 1.9,
-                          whiteSpace: 'pre',
-                          textAlign: 'left',
-                        }}>{credText}</pre>
-                        <CopyButton text={credText} />
+                      <div style={{
+                        background: 'var(--surface2)',
+                        borderRadius: 10,
+                        border: '1px solid var(--border)',
+                        overflow: 'hidden',
+                      }}>
+                        {/* Header */}
+                        <div style={{
+                          padding: '10px 14px',
+                          borderBottom: '1px solid var(--border)',
+                          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                          background: 'rgba(148,163,184,.04)',
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 7, color: 'var(--muted)' }}>
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" style={{ stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' }}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/></svg>
+                            <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.5px' }}>
+                              Identifiants M365
+                            </span>
+                          </div>
+                          <CopyButton text={credText} />
+                        </div>
+
+                        {/* Rows */}
+                        {rows.map((row, i) => (
+                          <div key={i} style={{
+                            padding: '11px 14px',
+                            borderBottom: i < rows.length - 1 ? '1px solid rgba(148,163,184,.08)' : 'none',
+                            display: 'flex', alignItems: 'center', gap: 10,
+                          }}>
+                            <div style={{
+                              width: 30, height: 30, borderRadius: 7, flexShrink: 0,
+                              background: row.highlight ? 'rgba(129,140,248,.1)' : 'rgba(148,163,184,.07)',
+                              border: `1px solid ${row.highlight ? 'rgba(129,140,248,.2)' : 'rgba(148,163,184,.1)'}`,
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              color: row.highlight ? '#818cf8' : 'var(--muted)',
+                            }}>
+                              {row.icon}
+                            </div>
+                            <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
+                              <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: 2 }}>
+                                {row.label}
+                              </div>
+                              <div style={{
+                                fontSize: 13, fontWeight: row.highlight ? 600 : 400,
+                                color: row.highlight ? 'var(--text)' : 'var(--text2)',
+                                fontFamily: row.mono ? 'ui-monospace, monospace' : undefined,
+                                wordBreak: 'break-all', lineHeight: 1.4,
+                              }}>
+                                {row.value}
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+
+                        {/* Warning — uniquement si mot de passe temporaire */}
+                        {forceChangePwd && (
+                          <div style={{
+                            padding: '9px 14px',
+                            background: 'rgba(245,158,11,.06)',
+                            borderTop: '1px solid rgba(245,158,11,.15)',
+                            display: 'flex', alignItems: 'center', gap: 7,
+                          }}>
+                            <svg width="11" height="11" viewBox="0 0 24 24" aria-hidden="true" style={{ fill: 'none', stroke: '#f59e0b', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', flexShrink: 0 }}><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                            <span style={{ fontSize: 11, color: '#d97706', lineHeight: 1.4 }}>
+                              Mot de passe à changer à la première connexion
+                            </span>
+                          </div>
+                        )}
                       </div>
                     );
                   })()}
@@ -1144,7 +1413,9 @@ export default function NewOnboarding() {
           ) : (
             <div>
               <div style={{ textAlign: 'center', padding: '16px 0 8px' }}>
-                <div style={{ fontSize: 48, marginBottom: 16 }}>❌</div>
+                <div style={{ width: 56, height: 56, borderRadius: 16, background: 'rgba(239,68,68,.1)', border: '1px solid rgba(239,68,68,.25)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px', color: '#ef4444' }}>
+                  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
+                </div>
                 <h2 style={{ fontSize: 18, fontWeight: 700, color: 'var(--danger)', marginBottom: 8 }}>Onboarding échoué</h2>
                 {onboarding.rolled_back && (
                   <p style={{ color: 'var(--warning)', fontSize: 13, marginBottom: 4 }}>↩ Rollback effectué — le compte Azure AD a été supprimé.</p>
@@ -1162,7 +1433,8 @@ export default function NewOnboarding() {
               </Link>
             )}
             <button className="btn btn-primary" onClick={resetAll}>
-              🚀 Nouvel onboarding
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2"/><path d="M12 8L6.7 13.3c-1.1 1.1-1.1 2.9 0 4L12 22l10-10-4.7-4.7c-1.1-1.1-2.9-1.1-4 0L8 12"/><path d="M22 2L13.4 10.6"/><path d="M15 2H22V9"/></svg>
+              Nouvel onboarding
             </button>
           </div>
         </div>

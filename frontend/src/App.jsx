@@ -8,6 +8,8 @@ import NewOnboarding from './pages/NewOnboarding';
 import History from './pages/History';
 import OnboardingDetail from './pages/OnboardingDetail';
 import Admin from './pages/Admin';
+import Security from './pages/Security';
+import Offboarding from './pages/Offboarding';
 
 function Guard({ children, adminOnly = false }) {
   const { user } = useUser();
@@ -29,6 +31,8 @@ function AppRoutes() {
         <Route path="history" element={<History />} />
         <Route path="history/:id" element={<OnboardingDetail />} />
         <Route path="admin" element={<Guard adminOnly><Admin /></Guard>} />
+        <Route path="security" element={<Guard adminOnly><Security /></Guard>} />
+        <Route path="offboarding" element={<Guard adminOnly><Offboarding /></Guard>} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
@@ -38,7 +42,7 @@ function AppRoutes() {
 export default function App() {
   return (
     <UserProvider>
-      <BrowserRouter>
+      <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <AppRoutes />
       </BrowserRouter>
     </UserProvider>

@@ -111,6 +111,13 @@ function migrate(db) {
 
     // v4: ville de l'employé (pour les pays ayant des villes configurées)
     `ALTER TABLE onboardings ADD COLUMN city TEXT;`,
+
+    // v5: séparation historique mock / réel
+    `ALTER TABLE onboardings ADD COLUMN is_mock INTEGER DEFAULT 0;
+     CREATE INDEX IF NOT EXISTS idx_onboardings_mock ON onboardings(is_mock);`,
+
+    // v6: tous les anciens enregistrements sont mock (créés avant la séparation)
+    `UPDATE onboardings SET is_mock=1;`,
   ];
 
   for (let i = current; i < migrations.length; i++) {

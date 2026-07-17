@@ -43,12 +43,14 @@ const LOCATION_TO_ISO = {
   CA:  'CA',
 };
 
-async function createUser({ firstName, lastName, email, location }) {
+async function createUser({ firstName, lastName, email, location, forceChangePassword }) {
   const domain        = process.env.DEFAULT_DOMAIN    || 'monentreprise.com';
   const usageLocation = LOCATION_TO_ISO[location] || process.env.USAGE_LOCATION || 'FR';
-  // Sécurité par défaut : changement forcé à la 1re connexion, sauf désactivation explicite
-  const forceChange   = process.env.FORCE_CHANGE_PASSWORD !== 'false';
-  const password      = generatePassword(16);
+  // forceChangePassword passé explicitement depuis server.js (DB setting) ; fallback env
+  const forceChange   = forceChangePassword !== undefined
+    ? forceChangePassword
+    : process.env.FORCE_CHANGE_PASSWORD !== 'false';
+  const password      = generatePassword(12);
 
   const slug = `${firstName}.${lastName}`
     .toLowerCase()

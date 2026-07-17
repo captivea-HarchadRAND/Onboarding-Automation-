@@ -90,7 +90,7 @@ async function createUser({ firstName, lastName, email }) {
     userPrincipalName: email || `${slug}@${domain}`,
     givenName: firstName,
     surname: lastName,
-    temporaryPassword: generatePassword(16),
+    temporaryPassword: generatePassword(12),
   };
 }
 

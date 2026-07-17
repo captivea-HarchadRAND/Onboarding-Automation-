@@ -8,6 +8,7 @@ const { scrypt, randomBytes, timingSafeEqual, createHash } = require('crypto');
 const { promisify } = require('util');
 const path = require('path');
 const fs = require('fs');
+const nodemailer = require('nodemailer');
 
 // ─── Env loading (doit être avant tout accès à process.env) ──────────────────
 const envFile = path.join(__dirname, '.env');
@@ -48,6 +49,80 @@ const MOCK_GRAPH = process.env.MOCK_GRAPH === 'true';
 // Mot de passe généré en mémoire uniquement — jamais stocké en DB
 // Retourné une seule fois au poll de complétion, puis effacé
 const tempPasswordStore = new Map();
+
+// ─── 2FA OTP store ────────────────────────────────────────────────────────────
+// { email → { code, expires, attempts } }  — jamais persisté en DB
+const otpStore = new Map();
+const OTP_TTL_MS   = 10 * 60 * 1000; // 10 minutes
+const OTP_MAX_TRIES = 5;
+
+function generate2FACode() {
+  // 6 chiffres via CSPRNG (pas Math.random)
+  const buf = randomBytes(4);
+  return String(buf.readUInt32BE(0) % 1000000).padStart(6, '0');
+}
+
+// 2FA activée si SMTP_USER est défini
+function get2FASender() {
+  return process.env.SMTP_FROM || process.env.SMTP_USER || null;
+}
+
+let _smtpTransport = null;
+function getSmtpTransport() {
+  if (!_smtpTransport) {
+    _smtpTransport = nodemailer.createTransport({
+      host: process.env.SMTP_HOST || 'smtp.office365.com',
+      port: parseInt(process.env.SMTP_PORT || '587', 10),
+      secure: false,
+      pool: true,
+      auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
+      },
+    });
+  }
+  return _smtpTransport;
+}
+
+async function send2FACode(toEmail, code) {
+  const sender = get2FASender();
+  if (!sender) return;
+  await getSmtpTransport().sendMail({
+    from: sender,
+    to: toEmail,
+    subject: 'Code de vérification — Onboarding M365',
+    html: `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;padding:0;background:#f1f5f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9;padding:48px 16px">
+  <tr><td align="center">
+    <table width="100%" cellpadding="0" cellspacing="0" style="max-width:460px;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.07)">
+      <tr><td style="background:linear-gradient(135deg,#4f46e5 0%,#6366f1 100%);padding:36px 40px 28px;text-align:center">
+        <div style="display:inline-block;background:rgba(255,255,255,.15);border-radius:12px;padding:10px 18px;margin-bottom:16px">
+          <span style="color:#ffffff;font-size:22px;font-weight:700;letter-spacing:-.5px">Captivea</span>
+        </div>
+        <p style="margin:0;color:rgba(255,255,255,.85);font-size:13px;letter-spacing:.5px;text-transform:uppercase">Onboarding M365</p>
+      </td></tr>
+      <tr><td style="padding:40px 40px 32px">
+        <p style="margin:0 0 24px;color:#1e293b;font-size:18px;font-weight:600">Vérification en deux étapes</p>
+        <p style="margin:0 0 20px;color:#64748b;font-size:14px;line-height:1.6">Entrez le code ci-dessous pour finaliser votre connexion.</p>
+        <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:12px;padding:28px 20px;text-align:center;margin:0 0 24px">
+          <table cellpadding="0" cellspacing="0" style="margin:0 auto">
+            <tr>
+              ${code.split('').map(d => `<td style="padding:0 5px"><div style="width:42px;height:52px;background:#ffffff;border:1.5px solid #c7d2fe;border-radius:8px;text-align:center;line-height:52px;font-size:28px;font-weight:700;color:#4f46e5;font-family:'Courier New',monospace">${d}</div></td>`).join('')}
+            </tr>
+          </table>
+          <p style="margin:16px 0 0;color:#94a3b8;font-size:12px">Valable <strong style="color:#64748b">10 minutes</strong></p>
+        </div>
+        <p style="margin:0;color:#94a3b8;font-size:12px;line-height:1.7;border-top:1px solid #f1f5f9;padding-top:20px">Si vous n'avez pas demandé ce code, ignorez cet email et ne le partagez avec personne.</p>
+      </td></tr>
+      <tr><td style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:16px 40px;text-align:center">
+        <p style="margin:0;color:#cbd5e1;font-size:11px">Captivea · Message automatique — ne pas répondre</p>
+      </td></tr>
+    </table>
+  </td></tr>
+</table>
+</body></html>`,
+  });
+}
 const graphLib = MOCK_GRAPH ? require('./lib/mock') : {
   ...require('./lib/group'),
   ...require('./lib/license'),
@@ -146,6 +221,15 @@ function isValidEmail(email) {
   return typeof email === 'string' && email.length <= 254 && EMAIL_RE.test(email);
 }
 
+// Hash scrypt mis en cache du mot de passe de récupération (calculé une seule fois au premier login)
+let _recoveryHash = null;
+async function getRecoveryHash() {
+  const recPwd = process.env.RECOVERY_ADMIN_PASSWORD;
+  if (!recPwd) return null;
+  if (!_recoveryHash) _recoveryHash = await hashPassword(recPwd);
+  return _recoveryHash;
+}
+
 // Hash factice pour égaliser le temps de réponse du login quand l'email n'existe pas
 // (empêche l'énumération de comptes par mesure de timing)
 let _dummyHash = null;
@@ -162,6 +246,8 @@ function validatePassword(pw) {
   if (!/[^A-Za-z0-9]/.test(pw)) return 'Au moins un caractère spécial requis.';
   return null;
 }
+
+function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
 function dbRows(db, sql, params = []) {
   const res = db.exec(sql, params);
@@ -242,18 +328,29 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
   // Identifiants définis UNIQUEMENT dans .env. Toujours valables, même si le mot de
   // passe admin en base est perdu. La session est rattachée à un compte admin réel.
   const recEmail = process.env.RECOVERY_ADMIN_EMAIL;
-  const recPwd   = process.env.RECOVERY_ADMIN_PASSWORD;
-  if (recEmail && recPwd && normalizeEmail(email) === normalizeEmail(recEmail)) {
-    const sha = (s) => createHash('sha256').update(String(s)).digest();
-    if (timingSafeEqual(sha(password), sha(recPwd))) {
+  if (recEmail && normalizeEmail(email) === normalizeEmail(recEmail)) {
+    const recHash = await getRecoveryHash();
+    if (recHash && await verifyPassword(password, recHash)) {
       const adminUser = dbRow(db, `SELECT * FROM users WHERE email=? AND role='admin' AND status='active'`, [normalizeEmail(recEmail)])
                      || dbRow(db, `SELECT * FROM users WHERE role='admin' AND status='active' ORDER BY created_at LIMIT 1`);
       if (adminUser) {
+        logAction(`Connexion de SECOURS (.env) utilisée — accès admin accordé`);
+        // Le chemin de secours passe aussi par la 2FA si elle est configurée
+        if (get2FASender()) {
+          const code = generate2FACode();
+          otpStore.set(normalizeEmail(recEmail), { code, expires: Date.now() + OTP_TTL_MS, attempts: 0, userId: adminUser.id });
+          try {
+            await send2FACode(adminUser.email, code);
+          } catch (e) {
+            logAction(`[2FA] Échec SMTP (secours) : ${e.message}`);
+            return res.status(500).json({ error: `Échec SMTP : ${e.message}` });
+          }
+          return res.json({ requires2fa: true });
+        }
         const token = uuidv4();
         const expires = new Date(Date.now() + SESSION_TTL_DAYS * 86400000).toISOString();
         db.run(`INSERT INTO sessions VALUES (?,?,?,?,?)`, [token, adminUser.id, adminUser.name, adminUser.role, expires]);
         saveDB();
-        logAction(`Connexion de SECOURS (.env) utilisée — accès admin accordé`);
         res.cookie('session', token, sessionCookieOpts());
         return res.json({ user: { id: adminUser.id, name: adminUser.name, email: adminUser.email, role: adminUser.role } });
       }
@@ -264,16 +361,59 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
   const user = dbRow(db, `SELECT * FROM users WHERE email=? AND status='active'`, [normalizeEmail(email)]);
   if (!user || !user.password_hash) {
     await verifyPassword(password, await getDummyHash()); // temps de réponse constant (anti-énumération)
+    logAction(`[AUTH] Échec connexion — compte inconnu`);
     return res.status(401).json({ error: 'Identifiants invalides' });
   }
   const ok = await verifyPassword(password, user.password_hash);
-  if (!ok) return res.status(401).json({ error: 'Identifiants invalides' });
+  if (!ok) {
+    logAction(`[AUTH] Échec connexion — mot de passe incorrect : ${user.email}`);
+    return res.status(401).json({ error: 'Identifiants invalides' });
+  }
+
+  // ─── 2FA ─────────────────────────────────────────────────────────────────
+  if (get2FASender()) {
+    const code = generate2FACode();
+    otpStore.set(normalizeEmail(email), { code, expires: Date.now() + OTP_TTL_MS, attempts: 0, userId: user.id });
+    try {
+      await send2FACode(user.email, code);
+    } catch (e) {
+      logAction(`[2FA] Échec SMTP : ${e.message}`);
+      return res.status(500).json({ error: `Échec SMTP : ${e.message}` });
+    }
+    logAction(`[AUTH] Code 2FA envoyé à ${user.email}`);
+    return res.json({ requires2fa: true });
+  }
 
   const token = uuidv4();
   const expires = new Date(Date.now() + SESSION_TTL_DAYS * 86400000).toISOString();
   db.run(`INSERT INTO sessions VALUES (?,?,?,?,?)`, [token, user.id, user.name, user.role, expires]);
   saveDB();
 
+  res.cookie('session', token, sessionCookieOpts());
+  res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+});
+
+app.post('/api/auth/verify-2fa', authLimiter, async (req, res) => {
+  const { email, code } = req.body;
+  if (!email || !code) return res.status(400).json({ error: 'Email et code requis' });
+  const key = normalizeEmail(email);
+  const entry = otpStore.get(key);
+  if (!entry) return res.status(401).json({ error: 'Code expiré ou invalide' });
+  if (Date.now() > entry.expires) { otpStore.delete(key); return res.status(401).json({ error: 'Code expiré' }); }
+  entry.attempts += 1;
+  if (entry.attempts > OTP_MAX_TRIES) { otpStore.delete(key); return res.status(401).json({ error: 'Trop de tentatives — recommencez la connexion' }); }
+  if (String(code).trim() !== entry.code) return res.status(401).json({ error: 'Code incorrect' });
+  otpStore.delete(key);
+
+  const db = await getDB();
+  const user = dbRow(db, `SELECT * FROM users WHERE id=? AND status='active'`, [entry.userId]);
+  if (!user) return res.status(401).json({ error: 'Compte introuvable' });
+
+  const token = uuidv4();
+  const expires = new Date(Date.now() + SESSION_TTL_DAYS * 86400000).toISOString();
+  db.run(`INSERT INTO sessions VALUES (?,?,?,?,?)`, [token, user.id, user.name, user.role, expires]);
+  saveDB();
+  logAction(`[AUTH] Connexion 2FA réussie — ${user.email}`);
   res.cookie('session', token, sessionCookieOpts());
   res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role } });
 });
@@ -414,21 +554,35 @@ async function executeOnboarding(id) {
   const onb = dbRow(db, `SELECT * FROM onboardings WHERE id=?`, [id]);
   if (!onb) return;
 
+  // Lire le schéma configuré (no-code pipeline)
+  const schemaRow = dbRow(db, `SELECT value FROM settings WHERE key='onboarding_schema'`);
+  const schema = (() => { try { return schemaRow ? JSON.parse(schemaRow.value) : {}; } catch (_) { return {}; } })();
+  const step2Enabled  = schema.step2_group?.enabled     !== false;
+  const step3Enabled  = schema.step3_license?.enabled   !== false;
+  const step4Enabled  = schema.step4_sp_groups?.enabled !== false;
+  const retryDelays   = (Array.isArray(schema.step3_license?.retry_delays) && schema.step3_license.retry_delays.length)
+    ? schema.step3_license.retry_delays
+    : [15, 30, 45, 60, 90];
+
   db.run(`UPDATE onboardings SET status='running' WHERE id=?`, [id]);
   saveDB();
 
   let adUserId = null;
 
   try {
-    // Étape 1 — Création du compte Azure AD
+    // Étape 1 — Création du compte Azure AD (toujours exécutée)
     updateStep(db, id, 1, 'running');
-    logAction(`[${id}] [1/3] Création du compte pour ${onb.employee_email}...`);
+    logAction(`[${id}] [1/4] Création du compte pour ${onb.employee_email}...`);
+
+    const dbForce = dbRow(db, `SELECT value FROM settings WHERE key='force_change_password'`);
+    const forceChangePassword = dbForce ? dbForce.value !== 'false' : process.env.FORCE_CHANGE_PASSWORD !== 'false';
 
     const adUser = await createUser({
       firstName: onb.employee_firstname,
       lastName:  onb.employee_lastname,
       email:     onb.employee_email,
       location:  onb.location,
+      forceChangePassword,
     });
     adUserId = adUser.id;
 
@@ -439,72 +593,105 @@ async function executeOnboarding(id) {
     db.run(`UPDATE onboardings SET employee_ad_id=? WHERE id=?`, [adUserId, id]);
     saveDB();
     updateStep(db, id, 1, 'done');
-    logAction(`[${id}] [1/3] ✅ Compte créé : ${adUser.userPrincipalName}`);
+    logAction(`[${id}] [1/4] ✅ Compte créé : ${adUser.userPrincipalName}`);
 
     // Étape 2 — Ajout au groupe
-    updateStep(db, id, 2, 'running');
-    logAction(`[${id}] [2/3] Ajout au groupe "${onb.group_name}"...`);
-
-    await addMemberToGroup(onb.group_id, adUserId);
-    updateStep(db, id, 2, 'done');
-    logAction(`[${id}] [2/3] ✅ Ajouté au groupe "${onb.group_name}"`);
+    if (step2Enabled) {
+      updateStep(db, id, 2, 'running');
+      logAction(`[${id}] [2/4] Ajout au groupe "${onb.group_name}"...`);
+      await addMemberToGroup(onb.group_id, adUserId);
+      updateStep(db, id, 2, 'done');
+      logAction(`[${id}] [2/4] ✅ Ajouté au groupe "${onb.group_name}"`);
+    } else {
+      updateStep(db, id, 2, 'skipped');
+      logAction(`[${id}] [2/4] ⏭️ Groupe principal — étape désactivée dans le schéma`);
+    }
 
     // Étape 3 — Assignation de la licence
-    updateStep(db, id, 3, 'running');
-    logAction(`[${id}] [3/3] Assignation de la licence "${onb.license_name}"...`);
-
-    await assignLicense(adUserId, onb.sku_id);
-    updateStep(db, id, 3, 'done');
-    logAction(`[${id}] [3/3] ✅ Licence "${onb.license_name}" assignée`);
+    // Exchange peut prendre 1-5 min à provisionner après la création du compte AD.
+    if (step3Enabled) {
+      updateStep(db, id, 3, 'running');
+      logAction(`[${id}] [3/4] Assignation de la licence "${onb.license_name}"...`);
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await assignLicense(adUserId, onb.sku_id);
+          break;
+        } catch (e) {
+          const isExchangeNotReady =
+            (e.code === 'InternalServerError' || e.graphStatus === 500) &&
+            (/Exchange/i.test(e.message || '')         ||
+             /recipient/i.test(e.message || '')        ||
+             /recipient/i.test(e.innerMessage || '')   ||
+             /Active Directory/i.test(e.innerMessage || '') ||
+             /not.*found/i.test(e.innerMessage || '')  ||
+             /Exchange/i.test(e.innerType || '')       ||
+             /Cmdlet/i.test(e.innerType || ''));
+          if (isExchangeNotReady && attempt < retryDelays.length) {
+            const wait = retryDelays[attempt];
+            logAction(`[${id}] [3/4] ⏳ Exchange pas encore prêt — retry ${attempt + 1}/${retryDelays.length} dans ${wait}s...`);
+            await sleep(wait * 1000);
+          } else {
+            throw e;
+          }
+        }
+      }
+      updateStep(db, id, 3, 'done');
+      logAction(`[${id}] [3/4] ✅ Licence "${onb.license_name}" assignée`);
+    } else {
+      updateStep(db, id, 3, 'skipped');
+      logAction(`[${id}] [3/4] ⏭️ Licence — étape désactivée dans le schéma`);
+    }
 
     // Étape 4 — Groupes SharePoint
-    updateStep(db, id, 4, 'running');
-    const globalGroups    = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='sharepoint_global_groups'`)?.value  || '[]');
-    const countryGroups   = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='sharepoint_country_groups'`)?.value || '[]');
-    const pointageGroups  = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='pointage_assignments'`)?.value      || '[]');
-    const deptAssignments      = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='department_assignments'`)?.value       || '[]');
-    const pointageCommAssign   = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='pointage_comm_assignments'`)?.value    || '[]');
-    const location             = onb.location || '';
-    const jobRole              = onb.job_role || '';
-    const city                 = onb.city || '';
-    // Groupe(s) de la ville sélectionnée (configurés sous le groupe pays correspondant)
-    const cityGroups = countryGroups
-      .filter(g => g.location === location)
-      .flatMap(g => g.cities || [])
-      .filter(c => c.id && c.name === city)
-      .map(c => ({ id: c.id, label: c.name }));
-    // Groupes de communication — fusion des deux sources avec déduplication par id
-    const commGroups = [
-      ...deptAssignments.filter(g => {
-        const depts = g.departments || [];
-        return g.id &&
-          (depts.length === 0 || depts.includes(jobRole)) &&
-          (g.location === 'ALL' || (g.countries || []).includes(location));
-      }).map(g => ({ id: g.id, label: g.name || g.id })),
-      ...pointageCommAssign.filter(g =>
-        g.id && g.department === jobRole && g.location === location
-      ).map(g => ({ id: g.id, label: g.label || g.id })),
-    ].filter((g, i, arr) => arr.findIndex(x => x.id === g.id) === i);
+    if (step4Enabled) {
+      updateStep(db, id, 4, 'running');
+      const globalGroups    = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='sharepoint_global_groups'`)?.value  || '[]');
+      const countryGroups   = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='sharepoint_country_groups'`)?.value || '[]');
+      const pointageGroups  = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='pointage_assignments'`)?.value      || '[]');
+      const deptAssignments      = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='department_assignments'`)?.value       || '[]');
+      const pointageCommAssign   = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='pointage_comm_assignments'`)?.value    || '[]');
+      const location             = onb.location || '';
+      const jobRole              = onb.job_role || '';
+      const city                 = onb.city || '';
+      const cityGroups = countryGroups
+        .filter(g => g.location === location)
+        .flatMap(g => g.cities || [])
+        .filter(c => c.id && c.name === city)
+        .map(c => ({ id: c.id, label: c.name }));
+      const commGroups = [
+        ...deptAssignments.filter(g => {
+          const depts = g.departments || [];
+          return g.id &&
+            (depts.length === 0 || depts.includes(jobRole)) &&
+            (g.location === 'ALL' || (g.countries || []).includes(location));
+        }).map(g => ({ id: g.id, label: g.name || g.id })),
+        ...pointageCommAssign.filter(g =>
+          g.id && g.department === jobRole && g.location === location
+        ).map(g => ({ id: g.id, label: g.label || g.id })),
+      ].filter((g, i, arr) => arr.findIndex(x => x.id === g.id) === i);
 
-    const spGroups = [
-      ...globalGroups.filter(g => g.id),
-      ...countryGroups.filter(g => g.id && g.location === location),
-      ...cityGroups,
-      ...pointageGroups.filter(g => g.id && g.location === location),
-      ...commGroups,
-    ]
-      // Exclure le groupe principal (déjà ajouté à l'étape 2) et dédupliquer par id
-      .filter(g => g.id && g.id !== onb.group_id)
-      .filter((g, i, arr) => arr.findIndex(x => x.id === g.id) === i);
-    if (spGroups.length === 0) {
-      logAction(`[${id}] [4/4] Aucun groupe SharePoint configuré — étape ignorée`);
-    } else {
-      for (const g of spGroups) {
-        await addMemberToGroup(g.id, adUserId);
-        logAction(`[${id}] [4/4] ✅ Ajouté au groupe SharePoint "${g.label}"`);
+      const spGroups = [
+        ...globalGroups.filter(g => g.id),
+        ...countryGroups.filter(g => g.id && g.location === location),
+        ...cityGroups,
+        ...pointageGroups.filter(g => g.id && g.location === location),
+        ...commGroups,
+      ]
+        .filter(g => g.id && g.id !== onb.group_id)
+        .filter((g, i, arr) => arr.findIndex(x => x.id === g.id) === i);
+      if (spGroups.length === 0) {
+        logAction(`[${id}] [4/4] Aucun groupe SharePoint configuré — étape ignorée`);
+      } else {
+        for (const g of spGroups) {
+          await addMemberToGroup(g.id, adUserId);
+          logAction(`[${id}] [4/4] ✅ Ajouté au groupe SharePoint "${g.label}"`);
+        }
       }
+      updateStep(db, id, 4, 'done');
+    } else {
+      updateStep(db, id, 4, 'skipped');
+      logAction(`[${id}] [4/4] ⏭️ Groupes SP/Comm — étape désactivée dans le schéma`);
     }
-    updateStep(db, id, 4, 'done');
 
     db.run(`UPDATE onboardings SET status='done', completed_at=datetime('now') WHERE id=?`, [id]);
     saveDB();
@@ -545,8 +732,8 @@ async function executeOnboarding(id) {
 app.get('/api/onboardings', auth, async (req, res) => {
   const db = await getDB();
   const { status, limit } = req.query;
-  let sql = `SELECT * FROM onboardings WHERE 1=1`;
-  const params = [];
+  let sql = `SELECT * FROM onboardings WHERE is_mock=?`;
+  const params = [MOCK_GRAPH ? 1 : 0];
   if (status) { sql += ` AND status=?`; params.push(status); }
   sql += ` ORDER BY created_at DESC`;
   if (limit) {
@@ -669,12 +856,12 @@ app.post('/api/onboardings', auth, async (req, res) => {
       (id, employee_firstname, employee_lastname, employee_email,
        job_role, location, city,
        group_id, group_name, sku_id, license_name,
-       status, created_by, created_by_name)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       status, created_by, created_by_name, is_mock)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [id, firstName.trim(), lastName.trim(), employeeEmail,
      jobRole?.trim() || null, location?.trim() || null, cityTrim || null,
      groupId, groupName, skuId, licenseName,
-     'pending', req.user.id, req.user.name]
+     'pending', req.user.id, req.user.name, MOCK_GRAPH ? 1 : 0]
   );
 
   const STEP_NAMES = [
@@ -704,19 +891,20 @@ app.get('/api/stats', auth, async (req, res) => {
   const db = await getDB();
   const month = new Date().toISOString().slice(0, 7);
 
-  const total = dbRow(db, `SELECT COUNT(*) as c FROM onboardings`)?.c ?? 0;
+  const isMock = MOCK_GRAPH ? 1 : 0;
+  const total = dbRow(db, `SELECT COUNT(*) as c FROM onboardings WHERE is_mock=?`, [isMock])?.c ?? 0;
   const thisMonth = dbRow(db,
-    `SELECT COUNT(*) as c FROM onboardings WHERE strftime('%Y-%m', created_at)=?`, [month])?.c ?? 0;
+    `SELECT COUNT(*) as c FROM onboardings WHERE is_mock=? AND strftime('%Y-%m', created_at)=?`, [isMock, month])?.c ?? 0;
   const done = dbRow(db,
-    `SELECT COUNT(*) as c FROM onboardings WHERE status='done' AND strftime('%Y-%m', created_at)=?`, [month])?.c ?? 0;
+    `SELECT COUNT(*) as c FROM onboardings WHERE is_mock=? AND status='done' AND strftime('%Y-%m', created_at)=?`, [isMock, month])?.c ?? 0;
   const failed = dbRow(db,
-    `SELECT COUNT(*) as c FROM onboardings WHERE status='failed' AND strftime('%Y-%m', created_at)=?`, [month])?.c ?? 0;
-  const running = dbRow(db, `SELECT COUNT(*) as c FROM onboardings WHERE status='running'`)?.c ?? 0;
+    `SELECT COUNT(*) as c FROM onboardings WHERE is_mock=? AND status='failed' AND strftime('%Y-%m', created_at)=?`, [isMock, month])?.c ?? 0;
+  const running = dbRow(db, `SELECT COUNT(*) as c FROM onboardings WHERE is_mock=? AND status='running'`, [isMock])?.c ?? 0;
 
   const recent = dbRows(db,
     `SELECT id, employee_firstname, employee_lastname, employee_email,
             job_role, location, status, created_at, created_by_name
-     FROM onboardings ORDER BY created_at DESC LIMIT 5`);
+     FROM onboardings WHERE is_mock=? ORDER BY created_at DESC LIMIT 5`, [isMock]);
 
   res.json({ total, thisMonth, done, failed, running, recent });
 });
@@ -801,11 +989,9 @@ app.put('/api/admin/settings', auth, requireRole('admin'), async (req, res) => {
   });
   saveDB();
 
-  if (!MOCK_GRAPH) {
+  if (req.body.azure_tenant_id || req.body.azure_client_id) {
     const { resetCredential } = require('./lib/graph');
-    if (req.body.azure_tenant_id || req.body.azure_client_id) {
-      resetCredential();
-    }
+    resetCredential();
   }
 
   res.json({ ok: true });
@@ -918,6 +1104,522 @@ app.put('/api/admin/users/:id/reset-password', auth, requireRole('admin'), async
   db.run(`DELETE FROM sessions WHERE user_id=?`, [req.params.id]);
   saveDB();
   logAction(`Mot de passe réinitialisé pour ${target.email} par ${req.user.email}`);
+  res.json({ ok: true });
+});
+
+// ─── Security events ─────────────────────────────────────────────────────────
+
+const SECURITY_PATTERNS = [
+  { re: /\[AUTH\] Échec connexion/,                   type: 'danger',  label: 'Échec connexion' },
+  { re: /Connexion de SECOURS/,                       type: 'warning', label: 'Accès de secours' },
+  { re: /Invitation acceptée/,                        type: 'success', label: 'Invitation acceptée' },
+  { re: /Invitation déjà consommée/,                  type: 'danger',  label: 'Replay invitation' },
+  { re: /Tentative d'acceptation d'invitation avec token invalide/, type: 'danger', label: 'Token invalide' },
+  { re: /Mot de passe réinitialisé/,                  type: 'info',    label: 'Reset mot de passe' },
+];
+
+app.get('/api/admin/security-events', auth, requireRole('admin'), (req, res) => {
+  try {
+    if (!fs.existsSync(LOG_FILE)) return res.json([]);
+    const lines = fs.readFileSync(LOG_FILE, 'utf8').split('\n').filter(Boolean);
+    const events = [];
+    for (const line of lines) {
+      const match = line.match(/^\[(.+?)\] (.+)$/);
+      if (!match) continue;
+      const [, ts, msg] = match;
+      const pattern = SECURITY_PATTERNS.find(p => p.re.test(msg));
+      if (!pattern) continue;
+      events.push({ ts, msg, type: pattern.type, label: pattern.label });
+    }
+    res.json(events.slice(-50).reverse());
+  } catch (_) {
+    res.json([]);
+  }
+});
+
+app.get('/api/admin/security-events/archive', auth, requireRole('admin'), (req, res) => {
+  try {
+    const content = fs.existsSync(LOG_FILE) ? fs.readFileSync(LOG_FILE, 'utf8') : '';
+    const date = new Date().toISOString().slice(0, 10);
+    res.setHeader('Content-Disposition', `attachment; filename="security-${date}.log"`);
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    logAction(`Journal archivé par ${req.user.email}`);
+    res.send(content);
+  } catch (_) {
+    res.status(500).json({ error: 'Impossible de lire le journal' });
+  }
+});
+
+app.delete('/api/admin/security-events', auth, requireRole('admin'), (req, res) => {
+  try {
+    fs.writeFileSync(LOG_FILE, '');
+    logAction(`Journal de sécurité effacé par ${req.user.email}`);
+    res.json({ ok: true });
+  } catch (_) {
+    res.status(500).json({ error: "Impossible d'effacer le journal" });
+  }
+});
+
+app.delete('/api/admin/security-events/selection', auth, requireRole('admin'), (req, res) => {
+  const { timestamps } = req.body || {};
+  if (!Array.isArray(timestamps) || timestamps.length === 0)
+    return res.status(400).json({ error: 'Aucune sélection' });
+  try {
+    if (!fs.existsSync(LOG_FILE)) return res.json({ ok: true, removed: 0 });
+    const tsSet = new Set(timestamps);
+    const lines = fs.readFileSync(LOG_FILE, 'utf8').split('\n');
+    const kept  = lines.filter(line => {
+      const m = line.match(/^\[(.+?)\]/);
+      return !m || !tsSet.has(m[1]);
+    });
+    fs.writeFileSync(LOG_FILE, kept.join('\n'));
+    logAction(`${timestamps.length} entrée(s) supprimée(s) du journal par ${req.user.email}`);
+    res.json({ ok: true, removed: timestamps.length });
+  } catch (_) {
+    res.status(500).json({ error: "Impossible de modifier le journal" });
+  }
+});
+
+// ─── Offboarding ──────────────────────────────────────────────────────────────
+
+const offboardingJobs = new Map();
+
+async function getOffboardToken() {
+  const tid = process.env.AZURE_TENANT_ID;
+  const cid = process.env.AZURE_CLIENT_ID;
+  const sec = process.env.AZURE_CLIENT_SECRET;
+  if (!tid || !cid || !sec) throw new Error('Configuration Azure AD incomplète');
+  const res = await fetch(
+    `https://login.microsoftonline.com/${encodeURIComponent(tid)}/oauth2/v2.0/token`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'client_credentials', client_id: cid, client_secret: sec,
+        scope: 'https://graph.microsoft.com/.default',
+      }).toString(),
+    }
+  );
+  const data = await res.json();
+  if (!data.access_token) throw new Error(data?.error_description || 'Token Graph indisponible');
+  return data.access_token;
+}
+
+async function graphOp(token, method, path, body = null, extraHeaders = {}) {
+  const res = await fetch(`https://graph.microsoft.com/v1.0${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
+      ...extraHeaders,
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (res.status === 204 || res.status === 202) return null;
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const errObj = json?.error || {};
+    const inner  = errObj.innererror || {};
+    const innerEx = inner.internalexception || {};
+    const msg = errObj.message || errObj.code || `HTTP ${res.status}`;
+    const err = new Error(msg);
+    err.graphStatus  = res.status;
+    err.code         = errObj.code || '';
+    err.innerMessage = innerEx.message || inner.message || '';
+    err.innerType    = innerEx.type    || inner.type    || '';
+    throw err;
+  }
+  return json;
+}
+
+function offboardStep(job, name, status, detail = '') {
+  const step = job.steps.find(st => st.name === name);
+  if (step) { step.status = status; if (detail) step.detail = detail; }
+}
+
+async function executeOffboarding(jobId) {
+  const job = offboardingJobs.get(jobId);
+  if (!job) return;
+
+  const MOCK_DELAY = parseInt(process.env.MOCK_DELAY_MS || '1200', 10);
+
+  const baseSteps = [
+    'Récupération des informations',
+    'Blocage du compte',
+    'Révocation des sessions',
+    'Suppression des groupes',
+    'Révocation de la licence',
+    "Configuration du transfert d'emails",
+    'Conversion en boîte partagée',
+    'Accès à la boîte partagée',
+  ];
+  job.steps = baseSteps.map(name => ({ name, status: 'pending', detail: '' }));
+
+  try {
+    let token = null;
+    if (!MOCK_GRAPH) token = await getOffboardToken();
+
+    // 1 ── Récupération des informations
+    offboardStep(job, 'Récupération des informations', 'running');
+    let userId, displayName;
+
+    if (MOCK_GRAPH) {
+      await sleep(MOCK_DELAY * 0.7);
+      userId = `mock-ob-${Date.now()}`;
+      const parts = job.targetEmail.split('@')[0].split('.');
+      displayName = parts.map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
+    } else {
+      const user = await graphOp(token, 'GET', `/users/${encodeURIComponent(job.targetEmail)}?$select=id,displayName`);
+      userId = user.id; displayName = user.displayName;
+    }
+    job.displayName = displayName;
+    offboardStep(job, 'Récupération des informations', 'done', displayName);
+    logAction(`[OFFBOARD][${jobId}] Utilisateur : ${displayName} <${job.targetEmail}>`);
+
+    // 2 ── Blocage du compte
+    offboardStep(job, 'Blocage du compte', 'running');
+    if (MOCK_GRAPH) await sleep(MOCK_DELAY * 0.5);
+    else await graphOp(token, 'PATCH', `/users/${userId}`, { accountEnabled: false });
+    offboardStep(job, 'Blocage du compte', 'done', 'Connexion Azure AD désactivée');
+    logAction(`[OFFBOARD][${jobId}] Compte bloqué`);
+
+    // 3 ── Révocation des sessions
+    offboardStep(job, 'Révocation des sessions', 'running');
+    if (MOCK_GRAPH) await sleep(MOCK_DELAY * 0.4);
+    else await graphOp(token, 'POST', `/users/${userId}/revokeSignInSessions`);
+    offboardStep(job, 'Révocation des sessions', 'done', 'Toutes les sessions actives fermées');
+    logAction(`[OFFBOARD][${jobId}] Sessions révoquées`);
+
+    // 4 ── Suppression des groupes
+    offboardStep(job, 'Suppression des groupes', 'running');
+    let removed = 0;
+    const removedGroupNames = [];
+    if (MOCK_GRAPH) {
+      await sleep(MOCK_DELAY);
+      const mockNames = ['Équipe Marketing', 'SharePoint - Intranet', 'Teams - Direction', 'Licence M365 E3', 'VPN Users'];
+      removed = mockNames.length;
+      removedGroupNames.push(...mockNames);
+    } else {
+      const memberOf = await graphOp(token, 'GET', `/users/${userId}/memberOf?$select=id,displayName`);
+      const groups = (memberOf?.value || []).filter(g => g['@odata.type'] === '#microsoft.graph.group');
+      for (const grp of groups) {
+        try {
+          await graphOp(token, 'DELETE', `/groups/${grp.id}/members/${userId}/$ref`);
+          removed++;
+          removedGroupNames.push(grp.displayName || grp.id);
+          offboardStep(job, 'Suppression des groupes', 'running', `${removed} groupe(s) retiré(s)…`);
+        } catch (_) { /* groupes dynamiques ou système : ignorés */ }
+      }
+    }
+    job.removedGroups = removedGroupNames;
+    offboardStep(job, 'Suppression des groupes', 'done', `${removed} groupe(s) retiré(s)`);
+    logAction(`[OFFBOARD][${jobId}] Retiré de ${removed} groupes : ${removedGroupNames.join(', ')}`);
+
+    // 5 ── Révocation de la licence
+    offboardStep(job, 'Révocation de la licence', 'running');
+    if (MOCK_GRAPH) {
+      await sleep(MOCK_DELAY * 0.5);
+      offboardStep(job, 'Révocation de la licence', 'done', '1 licence révoquée');
+    } else {
+      try {
+        const userWithLic = await graphOp(token, 'GET', `/users/${userId}?$select=assignedLicenses`);
+        const skuIds = (userWithLic?.assignedLicenses || []).map(l => l.skuId).filter(Boolean);
+        if (skuIds.length > 0) {
+          await graphOp(token, 'POST', `/users/${userId}/assignLicense`, { addLicenses: [], removeLicenses: skuIds });
+          offboardStep(job, 'Révocation de la licence', 'done', `${skuIds.length} licence(s) révoquée(s)`);
+          logAction(`[OFFBOARD][${jobId}] ${skuIds.length} licence(s) révoquée(s)`);
+        } else {
+          offboardStep(job, 'Révocation de la licence', 'skipped', 'Aucune licence assignée directement');
+          logAction(`[OFFBOARD][${jobId}] Aucune licence directe à révoquer`);
+        }
+      } catch (e) {
+        offboardStep(job, 'Révocation de la licence', 'skipped', `Non applicable (${e.message})`);
+        logAction(`[OFFBOARD][${jobId}] Révocation licence : ${e.message}`);
+      }
+    }
+
+    // 6 ── Transfert d'emails (règle inbox, copie conservée — optionnel)
+    offboardStep(job, "Configuration du transfert d'emails", 'running');
+    if (MOCK_GRAPH) {
+      await sleep(MOCK_DELAY * 0.6);
+    } else if (job.transferEmails && job.accessTo) {
+      try {
+        await graphOp(token, 'POST', `/users/${userId}/mailFolders/inbox/messageRules`, {
+          displayName: 'Offboarding — transfert automatique',
+          sequence: 1, isEnabled: true,
+          conditions: {},
+          actions: {
+            forwardTo: [{ emailAddress: { address: job.accessTo } }],
+            stopProcessingRules: false,
+          },
+        });
+      } catch (e) { logAction(`[OFFBOARD][${jobId}] Règle transfert : ${e.message}`); }
+    }
+    const fwdDetail = (job.transferEmails && job.accessTo)
+      ? `Emails transférés vers ${job.accessTo} — copie conservée dans la boîte partagée`
+      : 'Pas de transfert automatique configuré';
+    offboardStep(job, "Configuration du transfert d'emails", 'done', fwdDetail);
+    logAction(`[OFFBOARD][${jobId}] ${fwdDetail}`);
+
+    // 6 ── Conversion en Shared Mailbox
+    offboardStep(job, 'Conversion en boîte partagée', 'running');
+    if (MOCK_GRAPH) await sleep(MOCK_DELAY * 0.8);
+    const psCmd6 = `Set-Mailbox -Identity '${escapePsSQ(job.targetEmail)}' -Type Shared`;
+    offboardStep(job, 'Conversion en boîte partagée', 'manual', psCmd6);
+    logAction(`[OFFBOARD][${jobId}] Exchange Online requis : ${psCmd6}`);
+
+    // 7 ── Accès à la boîte partagée
+    offboardStep(job, 'Accès à la boîte partagée', 'running');
+    if (MOCK_GRAPH) await sleep(MOCK_DELAY * 0.5);
+    if (job.accessTo) {
+      const psCmd7 = `Add-MailboxPermission -Identity '${escapePsSQ(job.targetEmail)}' -User '${escapePsSQ(job.accessTo)}' -AccessRights FullAccess -AutoMapping $true`;
+      offboardStep(job, 'Accès à la boîte partagée', 'manual', psCmd7);
+      logAction(`[OFFBOARD][${jobId}] Exchange Online requis : ${psCmd7}`);
+    } else {
+      offboardStep(job, 'Accès à la boîte partagée', 'skipped', 'Aucun accès supplémentaire configuré');
+    }
+
+    job.status = 'done';
+    logAction(`[OFFBOARD][${jobId}] ✅ Offboarding terminé pour ${job.targetEmail} par ${job.initiatedBy}`);
+
+  } catch (err) {
+    logAction(`[OFFBOARD][${jobId}] ❌ ${err.message}`);
+    const running = job.steps.find(s => s.status === 'running');
+    if (running) { running.status = 'failed'; running.detail = err.message; }
+    job.status = 'failed';
+    job.error = err.message;
+  }
+}
+
+app.post('/api/offboarding', auth, requireRole('admin'), async (req, res) => {
+  const { targetEmail, accessTo, transferEmails } = req.body || {};
+  if (!isValidEmail(targetEmail)) return res.status(400).json({ error: 'Email invalide' });
+  if (accessTo && !isValidEmail(accessTo)) return res.status(400).json({ error: 'Email "Donner accès à" invalide' });
+  if (accessTo && targetEmail === accessTo) return res.status(400).json({ error: "L'utilisateur ne peut pas être son propre successeur" });
+
+  const jobId = uuidv4();
+  offboardingJobs.set(jobId, {
+    id: jobId, targetEmail, displayName: null,
+    accessTo: accessTo || null,
+    transferEmails: !!(transferEmails && accessTo),
+    status: 'running', steps: [], error: null,
+    initiatedBy: req.user.email,
+    createdAt: new Date().toISOString(),
+  });
+  logAction(`Offboarding lancé pour ${targetEmail} par ${req.user.email}`);
+  executeOffboarding(jobId).catch(err => {
+    logAction(`[OFFBOARD][${jobId}] Fatal : ${err.message}`);
+    const job = offboardingJobs.get(jobId);
+    if (job) { job.status = 'failed'; job.error = err.message; }
+  });
+  res.json({ id: jobId });
+});
+
+app.get('/api/offboarding/:id', auth, requireRole('admin'), (req, res) => {
+  const { id } = req.params;
+  if (!isValidUUID(id)) return res.status(400).json({ error: 'ID invalide' });
+  const job = offboardingJobs.get(id);
+  if (!job) return res.status(404).json({ error: 'Job introuvable' });
+  res.json(job);
+});
+
+// Échappe les métacaractères PowerShell pour les chaînes double-quotées : ` $ "
+function escapePsDQ(s) {
+  return String(s ?? '').replace(/`/g, '``').replace(/\$/g, '`$').replace(/"/g, '`"').replace(/\r?\n/g, ' ');
+}
+// Échappe pour les chaînes single-quotées PowerShell : ' → ''
+function escapePsSQ(s) {
+  return String(s ?? '').replace(/'/g, "''");
+}
+
+app.get('/api/offboarding/:id/script', auth, requireRole('admin'), (req, res) => {
+  const { id } = req.params;
+  if (!isValidUUID(id)) return res.status(400).json({ error: 'ID invalide' });
+  const job = offboardingJobs.get(id);
+  if (!job) return res.status(404).json({ error: 'Job introuvable' });
+
+  const manualSteps = (job.steps || []).filter(s => s.status === 'manual');
+  if (!manualSteps.length) return res.status(400).json({ error: 'Aucune action manuelle pour ce job' });
+
+  const name = (job.displayName || job.targetEmail).replace(/[^a-zA-Z0-9_-]/g, '_');
+  const date = new Date().toISOString().slice(0, 10);
+
+  // ── Script PowerShell embarqué ──────────────────────────────────────────────
+  const psLines = [
+    `$ErrorActionPreference = 'Continue'`,
+    `$ProgressPreference = 'SilentlyContinue'`,
+    ``,
+    `Write-Host "=============================================" -ForegroundColor Cyan`,
+    `Write-Host "  Offboarding Exchange Online" -ForegroundColor Cyan`,
+    `Write-Host "  ${escapePsDQ(job.displayName || job.targetEmail)}" -ForegroundColor White`,
+    `Write-Host "  Généré le ${date} par ${escapePsDQ(job.initiatedBy)}" -ForegroundColor Gray`,
+    `Write-Host "=============================================" -ForegroundColor Cyan`,
+    `Write-Host ""`,
+    ``,
+    `# 1. Vérification / installation du module`,
+    `Write-Host "Vérification du module ExchangeOnlineManagement..." -ForegroundColor Cyan`,
+    `if (-not (Get-Module -ListAvailable -Name ExchangeOnlineManagement)) {`,
+    `    Write-Host "  Module absent — installation en cours..." -ForegroundColor Yellow`,
+    `    Install-Module ExchangeOnlineManagement -Force -Scope CurrentUser -AllowClobber`,
+    `    Write-Host "  Module installé avec succès." -ForegroundColor Green`,
+    `} else {`,
+    `    Write-Host "  Module déjà installé." -ForegroundColor Green`,
+    `}`,
+    `Write-Host ""`,
+    ``,
+    `# 2. Connexion interactive`,
+    `Write-Host "Connexion à Exchange Online..." -ForegroundColor Cyan`,
+    `Connect-ExchangeOnline -UserPrincipalName "${escapePsDQ(job.initiatedBy)}"`,
+    `Write-Host ""`,
+    `Write-Host "Exécution des actions pour : ${escapePsDQ(job.targetEmail)}" -ForegroundColor White`,
+    `Write-Host "---------------------------------------------"`,
+    `Write-Host ""`,
+  ];
+
+  for (const step of manualSteps) {
+    psLines.push(`# ${step.name}`);
+    psLines.push(`Write-Host ">>> ${step.name}..." -ForegroundColor Yellow`);
+    psLines.push(`try {`);
+    psLines.push(`    ${step.detail}`);
+    psLines.push(`    Write-Host "    [OK]" -ForegroundColor Green`);
+    psLines.push(`} catch {`);
+    psLines.push(`    Write-Host "    [ERREUR] $_" -ForegroundColor Red`);
+    psLines.push(`}`);
+    psLines.push(`Write-Host ""`);
+  }
+
+  psLines.push(`Write-Host "---------------------------------------------"`);
+  psLines.push(`Write-Host "Terminé. Déconnexion..." -ForegroundColor Green`);
+  psLines.push(`Disconnect-ExchangeOnline -Confirm:$false`);
+  psLines.push(`Write-Host ""`);
+  psLines.push(`Write-Host "Appuyez sur une touche pour fermer..." -ForegroundColor Gray`);
+  psLines.push(`$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')`);
+
+  const psContent = psLines.join('\r\n');
+  const psBase64 = Buffer.from(psContent, 'utf8').toString('base64');
+  const tmpName = `offboarding_${id.slice(0, 8)}`;
+
+  // ── Fichier .bat ────────────────────────────────────────────────────────────
+  const bat = [
+    `@echo off`,
+    `chcp 65001 >nul`,
+    `title Offboarding Exchange Online - ${name}`,
+    ``,
+    `:: Écrire le script PowerShell dans un fichier temporaire`,
+    `set "PSFILE=%TEMP%\\${tmpName}.ps1"`,
+    ``,
+    `powershell -Command "$b64='${psBase64}'; $bytes=[System.Convert]::FromBase64String($b64); $txt=[System.Text.Encoding]::UTF8.GetString($bytes); [System.IO.File]::WriteAllText('%PSFILE%',$txt,[System.Text.Encoding]::UTF8)"`,
+    ``,
+    `if not exist "%PSFILE%" (`,
+    `    echo Erreur : impossible de créer le script temporaire.`,
+    `    pause`,
+    `    exit /b 1`,
+    `)`,
+    ``,
+    `:: Lancer PowerShell avec le script`,
+    `powershell -ExecutionPolicy Bypass -File "%PSFILE%"`,
+    ``,
+    `:: Nettoyage`,
+    `del "%PSFILE%" >nul 2>&1`,
+  ].join('\r\n');
+
+  const filename = `offboarding_${name}_${date}.bat`;
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(bat);
+});
+
+const MOCK_SEARCH_USERS = [
+  { id: 'ms-1',  displayName: 'Alice Bernard',    mail: 'alice.bernard@captivea.com' },
+  { id: 'ms-2',  displayName: 'Baptiste Dupont',  mail: 'baptiste.dupont@captivea.com' },
+  { id: 'ms-3',  displayName: 'Camille Fontaine', mail: 'camille.fontaine@captivea.com' },
+  { id: 'ms-4',  displayName: 'David Laurent',    mail: 'david.laurent@captivea.com' },
+  { id: 'ms-5',  displayName: 'Emma Petit',       mail: 'emma.petit@captivea.com' },
+  { id: 'ms-6',  displayName: 'François Girard',  mail: 'francois.girard@captivea.com' },
+  { id: 'ms-7',  displayName: 'Gabriel Moreau',   mail: 'gabriel.moreau@captivea.com' },
+  { id: 'ms-8',  displayName: 'Hélène Leblanc',   mail: 'helene.leblanc@captivea.com' },
+  { id: 'ms-9',  displayName: 'Ivan Simon',       mail: 'ivan.simon@captivea.com' },
+  { id: 'ms-10', displayName: 'Julie Rousseau',   mail: 'julie.rousseau@captivea.com' },
+  { id: 'ms-11', displayName: 'Kevin Thomas',     mail: 'kevin.thomas@captivea.com' },
+  { id: 'ms-12', displayName: 'Laura Martinez',   mail: 'laura.martinez@captivea.com' },
+  { id: 'ms-13', displayName: 'Marc Leroy',       mail: 'marc.leroy@captivea.com' },
+  { id: 'ms-14', displayName: 'Nathalie Picard',  mail: 'nathalie.picard@captivea.com' },
+  { id: 'ms-15', displayName: 'Olivier Roux',     mail: 'olivier.roux@captivea.com' },
+];
+
+app.get('/api/users/graph-search', auth, requireRole('admin'), async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (q.length < 2) return res.json([]);
+
+  if (MOCK_GRAPH) {
+    const lower = q.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+    const results = MOCK_SEARCH_USERS.filter(u => {
+      const name = u.displayName.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+      return name.includes(lower) || u.mail.toLowerCase().includes(lower);
+    }).slice(0, 6);
+    return res.json(results);
+  }
+
+  try {
+    const token = await getOffboardToken();
+    const encoded = encodeURIComponent(q);
+    const data = await graphOp(
+      token, 'GET',
+      `/users?$search="displayName:${encoded}" OR "mail:${encoded}"&$select=id,displayName,mail,userPrincipalName&$top=8&$orderby=displayName`,
+      null,
+      { ConsistencyLevel: 'eventual' }
+    );
+    const users = (data?.value || []).map(u => ({
+      id: u.id,
+      displayName: u.displayName || u.userPrincipalName,
+      mail: u.mail || u.userPrincipalName,
+    }));
+    res.json(users);
+  } catch (_) {
+    res.json([]);
+  }
+});
+
+// ─── Admin: Onboarding schema ─────────────────────────────────────────────────
+
+const SCHEMA_DEFAULTS = {
+  step2_group:     { enabled: true },
+  step3_license:   { enabled: true, retry_delays: [15, 30, 45, 60, 90] },
+  step4_sp_groups: { enabled: true },
+};
+
+app.get('/api/admin/schema', auth, requireRole('admin'), async (req, res) => {
+  const db = await getDB();
+  const row = dbRow(db, `SELECT value FROM settings WHERE key='onboarding_schema'`);
+  try {
+    const saved = row ? JSON.parse(row.value) : {};
+    res.json({
+      step2_group:     { ...SCHEMA_DEFAULTS.step2_group,     ...(saved.step2_group     || {}) },
+      step3_license:   { ...SCHEMA_DEFAULTS.step3_license,   ...(saved.step3_license   || {}) },
+      step4_sp_groups: { ...SCHEMA_DEFAULTS.step4_sp_groups, ...(saved.step4_sp_groups || {}) },
+    });
+  } catch (_) {
+    res.json(SCHEMA_DEFAULTS);
+  }
+});
+
+app.put('/api/admin/schema', auth, requireRole('admin'), async (req, res) => {
+  const s = req.body;
+  if (typeof s !== 'object' || s === null) return res.status(400).json({ error: 'Payload invalide' });
+  const allowed = new Set(['step2_group', 'step3_license', 'step4_sp_groups']);
+  for (const k of Object.keys(s)) {
+    if (!allowed.has(k)) return res.status(400).json({ error: `Clé inconnue : ${k}` });
+  }
+  if (s.step3_license?.retry_delays !== undefined) {
+    const rd = s.step3_license.retry_delays;
+    if (!Array.isArray(rd) || rd.length === 0 || rd.length > 10 ||
+        rd.some(x => typeof x !== 'number' || !Number.isInteger(x) || x < 1 || x > 600)) {
+      return res.status(400).json({ error: 'retry_delays : 1–10 entiers entre 1 et 600 secondes' });
+    }
+  }
+  const db = await getDB();
+  db.run(`INSERT OR REPLACE INTO settings (key, value) VALUES ('onboarding_schema', ?)`, [JSON.stringify(s)]);
+  saveDB();
   res.json({ ok: true });
 });
 
