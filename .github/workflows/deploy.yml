@@ -8,17 +8,6 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Write .env
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: 51.91.158.218
-          username: root
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            cat > /var/www/onboarding/backend/.env << 'ENVEOF'
-            ${{ secrets.ENV_FILE }}
-            ENVEOF
-
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
