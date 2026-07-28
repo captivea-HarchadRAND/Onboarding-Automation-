@@ -371,8 +371,10 @@ export default function Offboarding() {
   const [confirming,  setConfirming]  = useState(false);
   const [error,       setError]       = useState('');
   const [submitting,  setSubmitting]  = useState(false);
-  const [jobId,       setJobId]       = useState(null);
-  const [job,         setJob]         = useState(null);
+  const [jobId,          setJobId]          = useState(null);
+  const [job,            setJob]            = useState(null);
+  const [scriptChecked,  setScriptChecked]  = useState(false);
+  const [confirmingScript, setConfirmingScript] = useState(false);
   const pollRef = useRef(null);
 
   useEffect(() => {
@@ -411,9 +413,19 @@ export default function Offboarding() {
     } finally { setSubmitting(false); }
   }
 
+  async function confirmScript() {
+    setConfirmingScript(true);
+    try {
+      await api.post(`/api/offboarding/${jobId}/confirm`, {});
+      setScriptChecked(false);
+    } catch (err) {
+      setError(err.message || 'Erreur lors de la confirmation');
+    } finally { setConfirmingScript(false); }
+  }
+
   function reset() {
     clearInterval(pollRef.current);
-    setJobId(null); setJob(null);
+    setJobId(null); setJob(null); setScriptChecked(false); setConfirmingScript(false);
     setForm({ targetEmail: '', targetDisplay: '', accessTo: '', accessToDisplay: '', transferEmails: false });
     setConfirming(false); setError('');
   }
@@ -497,6 +509,86 @@ export default function Offboarding() {
               />
             ))}
           </div>
+
+          {/* Confirmation script Exchange */}
+          {job?.status === 'waitingForConfirmation' && (
+            <div style={{ padding: '0 20px 20px' }}>
+              <div style={{
+                padding: '16px 18px',
+                background: 'rgba(245,158,11,.05)',
+                border: '1px solid rgba(245,158,11,.3)',
+                borderLeft: '3px solid #f59e0b',
+                borderRadius: 9,
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 10 }}>
+                  <span style={{ color: '#f59e0b', display: 'flex' }}>
+                    <Icon path={IC.warn} size={15} strokeWidth={2} />
+                  </span>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: '#f59e0b' }}>
+                    Action manuelle requise avant de continuer
+                  </span>
+                </div>
+                <p style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 14, lineHeight: 1.6 }}>
+                  Téléchargez et exécutez le script Exchange (.bat) pour convertir la boîte en partagée et configurer les accès. La révocation de licence ne sera effectuée qu'après votre confirmation.
+                </p>
+                <a
+                  href={`/api/offboarding/${jobId}/script`}
+                  download
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 6,
+                    padding: '7px 12px', borderRadius: 7, textDecoration: 'none',
+                    border: '1px solid rgba(245,158,11,.35)',
+                    background: 'rgba(245,158,11,.08)', color: '#f59e0b',
+                    fontSize: 12, fontWeight: 600, marginBottom: 16,
+                    transition: 'background var(--transition)',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.background = 'rgba(245,158,11,.15)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'rgba(245,158,11,.08)'; }}
+                >
+                  <Icon path={IC.download} size={13} />
+                  Télécharger le script (.bat)
+                </a>
+                <label style={{
+                  display: 'flex', alignItems: 'flex-start', gap: 10,
+                  padding: '10px 12px', borderRadius: 8, cursor: 'pointer', marginBottom: 14,
+                  background: scriptChecked ? 'rgba(34,197,94,.06)' : 'var(--surface2)',
+                  border: `1px solid ${scriptChecked ? 'rgba(34,197,94,.3)' : 'var(--border)'}`,
+                  transition: 'border-color var(--transition), background var(--transition)',
+                }}>
+                  <input
+                    type="checkbox"
+                    checked={scriptChecked}
+                    onChange={e => setScriptChecked(e.target.checked)}
+                    style={{ marginTop: 1, accentColor: '#22c55e', width: 15, height: 15, flexShrink: 0, cursor: 'pointer' }}
+                  />
+                  <span style={{ fontSize: 12, color: scriptChecked ? '#22c55e' : 'var(--muted)', lineHeight: 1.5, transition: 'color var(--transition)' }}>
+                    J'ai exécuté le script Exchange avec succès — la boîte est convertie et les accès sont configurés
+                  </span>
+                </label>
+                <button
+                  onClick={confirmScript}
+                  disabled={!scriptChecked || confirmingScript}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 7,
+                    padding: '9px 18px', borderRadius: 8, border: 'none',
+                    background: scriptChecked && !confirmingScript ? '#22c55e' : 'rgba(34,197,94,.25)',
+                    color: scriptChecked && !confirmingScript ? '#fff' : 'rgba(34,197,94,.5)',
+                    cursor: scriptChecked && !confirmingScript ? 'pointer' : 'not-allowed',
+                    fontSize: 13, fontWeight: 700, fontFamily: 'inherit',
+                    transition: 'background var(--transition), color var(--transition)',
+                  }}
+                  onMouseEnter={e => { if (scriptChecked && !confirmingScript) e.currentTarget.style.background = '#16a34a'; }}
+                  onMouseLeave={e => { if (scriptChecked && !confirmingScript) e.currentTarget.style.background = '#22c55e'; }}
+                  onFocus={e => { e.currentTarget.style.boxShadow = '0 0 0 3px rgba(34,197,94,.3)'; }}
+                  onBlur={e => { e.currentTarget.style.boxShadow = 'none'; }}
+                >
+                  {confirmingScript
+                    ? <><span className="spinner" style={{ width: 13, height: 13 }} /> Confirmation…</>
+                    : <><Icon path={IC.check} size={14} strokeWidth={2.5} /> Confirmer et révoquer la licence</>}
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Summary */}
           {(isDone || isFailed) && (

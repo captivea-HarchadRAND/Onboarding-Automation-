@@ -1048,6 +1048,7 @@ function TabPointage({ locations, onLocationsChange }) {
   const [newLocCode,     setNewLocCode]     = useState('');
   const [newLocName,     setNewLocName]     = useState('');
   const [newLocFlag,     setNewLocFlag]     = useState('');
+  const [newLocIso,      setNewLocIso]      = useState('');
   const [locSaving,      setLocSaving]      = useState(false);
   const [confirmDelLoc,  setConfirmDelLoc]  = useState(null);
 
@@ -1204,13 +1205,14 @@ function TabPointage({ locations, onLocationsChange }) {
     if (!code || !name) return;
     if (locations.some(l => l.code === code)) { setError(`La filiale "${code}" existe déjà.`); return; }
     const flag = newLocFlag.trim() || '🏳️';
+    const iso  = newLocIso.trim().toUpperCase() || null;
     setLocSaving(true);
     try {
-      const newList = [...locations, { code, name, flag }];
+      const newList = [...locations, { code, name, flag, ...(iso ? { iso } : {}) }];
       await api.put('/api/admin/settings', { locations: newList });
       onLocationsChange(newList);
       setAssignments(a => ({ ...a, [code]: [] }));
-      setNewLocCode(''); setNewLocName(''); setNewLocFlag('');
+      setNewLocCode(''); setNewLocName(''); setNewLocFlag(''); setNewLocIso('');
       setAddingLoc(false);
     } catch (err) { setError(err.message); } finally { setLocSaving(false); }
   }
@@ -1390,9 +1392,10 @@ function TabPointage({ locations, onLocationsChange }) {
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
             <input autoFocus value={newLocFlag} onChange={e => setNewLocFlag(e.target.value)} placeholder="🏳️" style={{ padding: '4px 8px', borderRadius: 20, border: '2px solid var(--primary)', fontSize: 18, background: 'var(--surface2)', color: 'var(--text)', width: 54, textAlign: 'center' }} />
             <input value={newLocCode} onChange={e => setNewLocCode(e.target.value.toUpperCase())} placeholder="Code (CA)" style={{ padding: '4px 10px', borderRadius: 20, border: '2px solid var(--primary)', fontSize: 13, background: 'var(--surface2)', color: 'var(--text)', width: 80 }} />
-            <input value={newLocName} onChange={e => setNewLocName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') addLocation(); if (e.key === 'Escape') { setAddingLoc(false); setNewLocCode(''); setNewLocName(''); setNewLocFlag(''); } }} placeholder="Nom complet" style={{ padding: '4px 10px', borderRadius: 20, border: '2px solid var(--primary)', fontSize: 13, background: 'var(--surface2)', color: 'var(--text)', width: 140 }} />
+            <input value={newLocName} onChange={e => setNewLocName(e.target.value)} placeholder="Nom complet" style={{ padding: '4px 10px', borderRadius: 20, border: '2px solid var(--primary)', fontSize: 13, background: 'var(--surface2)', color: 'var(--text)', width: 140 }} />
+            <input value={newLocIso} onChange={e => setNewLocIso(e.target.value.toUpperCase())} onKeyDown={e => { if (e.key === 'Enter') addLocation(); if (e.key === 'Escape') { setAddingLoc(false); setNewLocCode(''); setNewLocName(''); setNewLocFlag(''); setNewLocIso(''); } }} placeholder="ISO (AU)" title="Code ISO 3166-1 alpha-2 pour Microsoft 365" style={{ padding: '4px 10px', borderRadius: 20, border: '2px solid var(--primary)', fontSize: 13, background: 'var(--surface2)', color: 'var(--text)', width: 70 }} />
             <button type="button" onClick={addLocation} disabled={locSaving} style={{ padding: '4px 10px', borderRadius: 20, background: 'var(--primary)', color: '#fff', border: 'none', cursor: 'pointer', fontSize: 13 }}>{locSaving ? '…' : '✓'}</button>
-            <button type="button" onClick={() => { setAddingLoc(false); setNewLocCode(''); setNewLocName(''); setNewLocFlag(''); }} style={{ padding: '4px 10px', borderRadius: 20, background: 'var(--surface2)', color: 'var(--muted)', border: '1px solid var(--border)', cursor: 'pointer', fontSize: 13 }}>✕</button>
+            <button type="button" onClick={() => { setAddingLoc(false); setNewLocCode(''); setNewLocName(''); setNewLocFlag(''); setNewLocIso(''); }} style={{ padding: '4px 10px', borderRadius: 20, background: 'var(--surface2)', color: 'var(--muted)', border: '1px solid var(--border)', cursor: 'pointer', fontSize: 13 }}>✕</button>
           </div>
         ) : (
           <button type="button" onClick={() => setAddingLoc(true)} style={{ padding: '5px 12px', borderRadius: 20, border: '2px dashed var(--border)', background: 'transparent', color: 'var(--muted)', cursor: 'pointer', fontSize: 13 }}>+ Filiale</button>

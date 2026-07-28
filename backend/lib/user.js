@@ -43,9 +43,9 @@ const LOCATION_TO_ISO = {
   CA:  'CA',
 };
 
-async function createUser({ firstName, lastName, email, location, forceChangePassword }) {
+async function createUser({ firstName, lastName, email, location, isoCode, forceChangePassword }) {
   const domain        = process.env.DEFAULT_DOMAIN    || 'monentreprise.com';
-  const usageLocation = LOCATION_TO_ISO[location] || process.env.USAGE_LOCATION || 'FR';
+  const usageLocation = isoCode || LOCATION_TO_ISO[location] || process.env.USAGE_LOCATION || 'FR';
   // forceChangePassword passé explicitement depuis server.js (DB setting) ; fallback env
   const forceChange   = forceChangePassword !== undefined
     ? forceChangePassword

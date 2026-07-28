@@ -24,7 +24,7 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={user ? <Navigate to="/" replace /> : <Login />} />
-      <Route path="/invite/:token" element={<AcceptInvite />} />
+      <Route path="/invite/:token" element={user ? <Navigate to="/" replace /> : <AcceptInvite />} />
       <Route element={<Guard><Layout /></Guard>}>
         <Route index element={<Dashboard />} />
         <Route path="new" element={<NewOnboarding />} />

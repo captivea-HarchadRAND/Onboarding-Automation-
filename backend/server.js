@@ -577,11 +577,18 @@ async function executeOnboarding(id) {
     const dbForce = dbRow(db, `SELECT value FROM settings WHERE key='force_change_password'`);
     const forceChangePassword = dbForce ? dbForce.value !== 'false' : process.env.FORCE_CHANGE_PASSWORD !== 'false';
 
+    // Résoudre le code ISO depuis la config des locations (champ iso ou fallback LOCATION_TO_ISO)
+    const locationsRaw = dbRow(db, `SELECT value FROM settings WHERE key='locations'`)?.value || process.env.ORG_LOCATIONS || '[]';
+    const locationsCfg = (() => { try { return JSON.parse(locationsRaw); } catch (_) { return []; } })();
+    const locationEntry = locationsCfg.find(l => l.code === onb.location);
+    const isoCode = locationEntry?.iso || null;
+
     const adUser = await createUser({
       firstName: onb.employee_firstname,
       lastName:  onb.employee_lastname,
       email:     onb.employee_email,
       location:  onb.location,
+      isoCode,
       forceChangePassword,
     });
     adUserId = adUser.id;
@@ -1038,6 +1045,50 @@ app.post('/api/admin/users', auth, requireRole('admin'), async (req, res) => {
   saveDB();
 
   const user = dbRow(db, `SELECT id, name, email, role, status FROM users WHERE id=?`, [id]);
+
+  if (inviteToken && get2FASender()) {
+    const inviteUrl = `${process.env.FRONTEND_URL || 'http://localhost:5174'}/invite/${inviteToken}`;
+    try {
+      await getSmtpTransport().sendMail({
+        from: get2FASender(),
+        to: normalizeEmail(email),
+        subject: 'Votre invitation — Onboarding M365 Captivea',
+        html: `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;padding:0;background:#f1f5f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9;padding:48px 16px">
+  <tr><td align="center">
+    <table width="100%" cellpadding="0" cellspacing="0" style="max-width:460px;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.07)">
+      <tr><td style="background:linear-gradient(135deg,#4f46e5 0%,#6366f1 100%);padding:36px 40px 28px;text-align:center">
+        <div style="display:inline-block;background:rgba(255,255,255,.15);border-radius:12px;padding:10px 18px;margin-bottom:16px">
+          <span style="color:#ffffff;font-size:22px;font-weight:700;letter-spacing:-.5px">Captivea</span>
+        </div>
+        <p style="margin:0;color:rgba(255,255,255,.85);font-size:13px;letter-spacing:.5px;text-transform:uppercase">Onboarding M365</p>
+      </td></tr>
+      <tr><td style="padding:40px">
+        <p style="margin:0 0 8px;color:#1e293b;font-size:18px;font-weight:600">Bienvenue, ${name} 👋</p>
+        <p style="margin:0 0 24px;color:#64748b;font-size:14px;line-height:1.7">Vous avez été invité à rejoindre la plateforme <strong>Onboarding M365</strong> de Captivea. Cliquez sur le bouton ci-dessous pour créer votre mot de passe et activer votre compte.</p>
+        <div style="text-align:center;margin:28px 0">
+          <a href="${inviteUrl}" style="display:inline-block;background:#4f46e5;color:#ffffff;text-decoration:none;font-size:15px;font-weight:600;padding:14px 32px;border-radius:10px;letter-spacing:-.2px">Activer mon compte →</a>
+        </div>
+        <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:8px;padding:14px 16px;margin:0 0 24px">
+          <p style="margin:0 0 6px;color:#94a3b8;font-size:11px;text-transform:uppercase;letter-spacing:.5px">Ou copiez ce lien</p>
+          <p style="margin:0;color:#4f46e5;font-size:12px;word-break:break-all">${inviteUrl}</p>
+        </div>
+        <p style="margin:0;color:#94a3b8;font-size:12px;line-height:1.7;border-top:1px solid #f1f5f9;padding-top:20px">Ce lien expire dans <strong style="color:#64748b">${INVITE_TTL_DAYS} jours</strong>. Si vous n'attendiez pas cette invitation, ignorez cet email.</p>
+      </td></tr>
+      <tr><td style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:16px 40px;text-align:center">
+        <p style="margin:0;color:#cbd5e1;font-size:11px">Captivea · Message automatique — ne pas répondre</p>
+      </td></tr>
+    </table>
+  </td></tr>
+</table>
+</body></html>`,
+      });
+      logAction(`[INVITE] Email envoyé à ${normalizeEmail(email)}`);
+    } catch (e) {
+      logAction(`[INVITE] Échec envoi email : ${e.message}`);
+    }
+  }
+
   res.status(201).json({ user, invite_token: inviteToken });
 });
 
@@ -1248,10 +1299,10 @@ async function executeOffboarding(jobId) {
     'Blocage du compte',
     'Révocation des sessions',
     'Suppression des groupes',
-    'Révocation de la licence',
-    "Configuration du transfert d'emails",
     'Conversion en boîte partagée',
     'Accès à la boîte partagée',
+    "Configuration du transfert d'emails",
+    'Révocation de la licence',
   ];
   job.steps = baseSteps.map(name => ({ name, status: 'pending', detail: '' }));
 
@@ -1315,30 +1366,25 @@ async function executeOffboarding(jobId) {
     offboardStep(job, 'Suppression des groupes', 'done', `${removed} groupe(s) retiré(s)`);
     logAction(`[OFFBOARD][${jobId}] Retiré de ${removed} groupes : ${removedGroupNames.join(', ')}`);
 
-    // 5 ── Révocation de la licence
-    offboardStep(job, 'Révocation de la licence', 'running');
-    if (MOCK_GRAPH) {
-      await sleep(MOCK_DELAY * 0.5);
-      offboardStep(job, 'Révocation de la licence', 'done', '1 licence révoquée');
+    // 5 ── Conversion en Shared Mailbox (avant révocation licence !)
+    offboardStep(job, 'Conversion en boîte partagée', 'running');
+    if (MOCK_GRAPH) await sleep(MOCK_DELAY * 0.8);
+    const psCmd5 = `Set-Mailbox -Identity '${escapePsSQ(job.targetEmail)}' -Type Shared`;
+    offboardStep(job, 'Conversion en boîte partagée', 'manual', psCmd5);
+    logAction(`[OFFBOARD][${jobId}] Exchange Online requis : ${psCmd5}`);
+
+    // 6 ── Accès à la boîte partagée (avant révocation licence !)
+    offboardStep(job, 'Accès à la boîte partagée', 'running');
+    if (MOCK_GRAPH) await sleep(MOCK_DELAY * 0.5);
+    if (job.accessTo) {
+      const psCmd6 = `Add-MailboxPermission -Identity '${escapePsSQ(job.targetEmail)}' -User '${escapePsSQ(job.accessTo)}' -AccessRights FullAccess -AutoMapping $true`;
+      offboardStep(job, 'Accès à la boîte partagée', 'manual', psCmd6);
+      logAction(`[OFFBOARD][${jobId}] Exchange Online requis : ${psCmd6}`);
     } else {
-      try {
-        const userWithLic = await graphOp(token, 'GET', `/users/${userId}?$select=assignedLicenses`);
-        const skuIds = (userWithLic?.assignedLicenses || []).map(l => l.skuId).filter(Boolean);
-        if (skuIds.length > 0) {
-          await graphOp(token, 'POST', `/users/${userId}/assignLicense`, { addLicenses: [], removeLicenses: skuIds });
-          offboardStep(job, 'Révocation de la licence', 'done', `${skuIds.length} licence(s) révoquée(s)`);
-          logAction(`[OFFBOARD][${jobId}] ${skuIds.length} licence(s) révoquée(s)`);
-        } else {
-          offboardStep(job, 'Révocation de la licence', 'skipped', 'Aucune licence assignée directement');
-          logAction(`[OFFBOARD][${jobId}] Aucune licence directe à révoquer`);
-        }
-      } catch (e) {
-        offboardStep(job, 'Révocation de la licence', 'skipped', `Non applicable (${e.message})`);
-        logAction(`[OFFBOARD][${jobId}] Révocation licence : ${e.message}`);
-      }
+      offboardStep(job, 'Accès à la boîte partagée', 'skipped', 'Aucun accès supplémentaire configuré');
     }
 
-    // 6 ── Transfert d'emails (règle inbox, copie conservée — optionnel)
+    // 7 ── Transfert d'emails (règle inbox, copie conservée — optionnel)
     offboardStep(job, "Configuration du transfert d'emails", 'running');
     if (MOCK_GRAPH) {
       await sleep(MOCK_DELAY * 0.6);
@@ -1361,22 +1407,34 @@ async function executeOffboarding(jobId) {
     offboardStep(job, "Configuration du transfert d'emails", 'done', fwdDetail);
     logAction(`[OFFBOARD][${jobId}] ${fwdDetail}`);
 
-    // 6 ── Conversion en Shared Mailbox
-    offboardStep(job, 'Conversion en boîte partagée', 'running');
-    if (MOCK_GRAPH) await sleep(MOCK_DELAY * 0.8);
-    const psCmd6 = `Set-Mailbox -Identity '${escapePsSQ(job.targetEmail)}' -Type Shared`;
-    offboardStep(job, 'Conversion en boîte partagée', 'manual', psCmd6);
-    logAction(`[OFFBOARD][${jobId}] Exchange Online requis : ${psCmd6}`);
+    // Pause — attendre confirmation admin que le script Exchange a été exécuté
+    job.status = 'waitingForConfirmation';
+    logAction(`[OFFBOARD][${jobId}] En attente de confirmation script Exchange`);
+    await new Promise(resolve => { job._confirmResolve = resolve; });
+    job.status = 'running';
+    logAction(`[OFFBOARD][${jobId}] Confirmation reçue — révocation de la licence`);
 
-    // 7 ── Accès à la boîte partagée
-    offboardStep(job, 'Accès à la boîte partagée', 'running');
-    if (MOCK_GRAPH) await sleep(MOCK_DELAY * 0.5);
-    if (job.accessTo) {
-      const psCmd7 = `Add-MailboxPermission -Identity '${escapePsSQ(job.targetEmail)}' -User '${escapePsSQ(job.accessTo)}' -AccessRights FullAccess -AutoMapping $true`;
-      offboardStep(job, 'Accès à la boîte partagée', 'manual', psCmd7);
-      logAction(`[OFFBOARD][${jobId}] Exchange Online requis : ${psCmd7}`);
+    // 8 ── Révocation de la licence (en dernier — après conversion boîte partagée)
+    offboardStep(job, 'Révocation de la licence', 'running');
+    if (MOCK_GRAPH) {
+      await sleep(MOCK_DELAY * 0.5);
+      offboardStep(job, 'Révocation de la licence', 'done', '1 licence révoquée');
     } else {
-      offboardStep(job, 'Accès à la boîte partagée', 'skipped', 'Aucun accès supplémentaire configuré');
+      try {
+        const userWithLic = await graphOp(token, 'GET', `/users/${userId}?$select=assignedLicenses`);
+        const skuIds = (userWithLic?.assignedLicenses || []).map(l => l.skuId).filter(Boolean);
+        if (skuIds.length > 0) {
+          await graphOp(token, 'POST', `/users/${userId}/assignLicense`, { addLicenses: [], removeLicenses: skuIds });
+          offboardStep(job, 'Révocation de la licence', 'done', `${skuIds.length} licence(s) révoquée(s)`);
+          logAction(`[OFFBOARD][${jobId}] ${skuIds.length} licence(s) révoquée(s)`);
+        } else {
+          offboardStep(job, 'Révocation de la licence', 'skipped', 'Aucune licence assignée directement');
+          logAction(`[OFFBOARD][${jobId}] Aucune licence directe à révoquer`);
+        }
+      } catch (e) {
+        offboardStep(job, 'Révocation de la licence', 'skipped', `Non applicable (${e.message})`);
+        logAction(`[OFFBOARD][${jobId}] Révocation licence : ${e.message}`);
+      }
     }
 
     job.status = 'done';
@@ -1421,6 +1479,20 @@ app.get('/api/offboarding/:id', auth, requireRole('admin'), (req, res) => {
   const job = offboardingJobs.get(id);
   if (!job) return res.status(404).json({ error: 'Job introuvable' });
   res.json(job);
+});
+
+app.post('/api/offboarding/:id/confirm', auth, requireRole('admin'), (req, res) => {
+  const { id } = req.params;
+  if (!isValidUUID(id)) return res.status(400).json({ error: 'ID invalide' });
+  const job = offboardingJobs.get(id);
+  if (!job) return res.status(404).json({ error: 'Job introuvable' });
+  if (job.status !== 'waitingForConfirmation') return res.status(400).json({ error: 'Job non en attente de confirmation' });
+  if (typeof job._confirmResolve === 'function') {
+    job._confirmResolve();
+    delete job._confirmResolve;
+  }
+  logAction(`[OFFBOARD][${id}] Script Exchange confirmé par ${req.user.email}`);
+  res.json({ ok: true });
 });
 
 // Échappe les métacaractères PowerShell pour les chaînes double-quotées : ` $ "
