@@ -1263,7 +1263,7 @@ function runExchangeScript(params) {
     if (!['AddDistributionMember','SetSharedMailbox','AddMailboxPermission'].includes(params.Action)) {
       return reject(new Error(`Action Exchange invalide : ${params.Action}`));
     }
-    if (params.Identity && !isValidEmail(params.Identity)) return reject(new Error('Identity invalide'));
+    if (params.Identity && !isValidEmail(params.Identity) && !isValidGuid(params.Identity)) return reject(new Error('Identity invalide'));
     if (params.Member   && !isValidEmail(params.Member))   return reject(new Error('Member invalide'));
     if (params.User     && !isValidEmail(params.User))     return reject(new Error('User invalide'));
 
