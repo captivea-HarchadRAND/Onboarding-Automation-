@@ -15,7 +15,6 @@ jobs:
           username: root
           port: 22
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
           script: |
             cd /var/www/onboarding
             git pull origin main
