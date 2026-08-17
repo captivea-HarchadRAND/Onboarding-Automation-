@@ -681,7 +681,6 @@ async function executeOnboarding(id) {
         ...globalGroups.filter(g => g.id),
         ...countryGroups.filter(g => g.id && g.location === location),
         ...cityGroups,
-        ...pointageGroups.filter(g => g.id && g.location === location),
         ...commGroups,
       ]
         .filter(g => g.id && g.id !== onb.group_id)
