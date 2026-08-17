@@ -689,8 +689,22 @@ async function executeOnboarding(id) {
         logAction(`[${id}] [4/4] Aucun groupe SharePoint configuré — étape ignorée`);
       } else {
         for (const g of spGroups) {
-          await addMemberToGroup(g.id, adUserId);
-          logAction(`[${id}] [4/4] ✅ Ajouté au groupe SharePoint "${g.label}"`);
+          try {
+            await addMemberToGroup(g.id, adUserId);
+            logAction(`[${id}] [4/4] ✅ Ajouté au groupe SharePoint "${g.label}"`);
+          } catch (e) {
+            if (/mail-enabled security/i.test(e.message) || /distribution list/i.test(e.message) || /Cannot Update/i.test(e.message)) {
+              logAction(`[${id}] [4/4] ⚠️ Graph API refusé pour "${g.label}" — tentative via Exchange PowerShell…`);
+              try {
+                await runExchangeScript({ Action: 'AddDistributionMember', Identity: g.id, Member: adUser.userPrincipalName });
+                logAction(`[${id}] [4/4] ✅ Ajouté via Exchange PowerShell au groupe "${g.label}"`);
+              } catch (psErr) {
+                logAction(`[${id}] [4/4] ❌ Exchange PowerShell échoué pour "${g.label}" : ${psErr.message}`);
+              }
+            } else {
+              throw e;
+            }
+          }
         }
       }
       updateStep(db, id, 4, 'done');
@@ -1230,6 +1244,55 @@ app.delete('/api/admin/security-events/selection', auth, requireRole('admin'), (
   }
 });
 
+// ─── Exchange PowerShell helper ───────────────────────────────────────────────
+
+const { spawn } = require('child_process');
+
+function runExchangeScript(params) {
+  return new Promise((resolve, reject) => {
+    const EXCHANGE_APP_ID       = process.env.EXCHANGE_APP_ID;
+    const EXCHANGE_CERT_PASSWORD = process.env.EXCHANGE_CERT_PASSWORD;
+
+    if (!EXCHANGE_APP_ID || !EXCHANGE_CERT_PASSWORD) {
+      return reject(new Error('EXCHANGE_APP_ID ou EXCHANGE_CERT_PASSWORD non configuré'));
+    }
+
+    const isValidEmail = v => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v);
+    const isValidGuid  = v => /^[0-9a-f-]{36}$/i.test(v);
+
+    if (!['AddDistributionMember','SetSharedMailbox','AddMailboxPermission'].includes(params.Action)) {
+      return reject(new Error(`Action Exchange invalide : ${params.Action}`));
+    }
+    if (params.Identity && !isValidEmail(params.Identity)) return reject(new Error('Identity invalide'));
+    if (params.Member   && !isValidEmail(params.Member))   return reject(new Error('Member invalide'));
+    if (params.User     && !isValidEmail(params.User))     return reject(new Error('User invalide'));
+
+    const args = [
+      '/opt/scripts/exchange.ps1',
+      '-Action',   params.Action,
+      '-Identity', params.Identity,
+    ];
+    if (params.Member) args.push('-Member', params.Member);
+    if (params.User)   args.push('-User',   params.User);
+
+    const env = {
+      ...process.env,
+      EXCHANGE_APP_ID,
+      EXCHANGE_CERT_PASSWORD,
+    };
+
+    const proc = spawn('pwsh', args, { env });
+    let stdout = '', stderr = '';
+    proc.stdout.on('data', d => { stdout += d; });
+    proc.stderr.on('data', d => { stderr += d; });
+    proc.on('close', code => {
+      if (code === 0) resolve(stdout.trim());
+      else reject(new Error(stderr.trim() || `pwsh exit ${code}`));
+    });
+    proc.on('error', reject);
+  });
+}
+
 // ─── Offboarding ──────────────────────────────────────────────────────────────
 
 const offboardingJobs = new Map();
@@ -1367,18 +1430,36 @@ async function executeOffboarding(jobId) {
 
     // 5 ── Conversion en Shared Mailbox (avant révocation licence !)
     offboardStep(job, 'Conversion en boîte partagée', 'running');
-    if (MOCK_GRAPH) await sleep(MOCK_DELAY * 0.8);
-    const psCmd5 = `Set-Mailbox -Identity '${escapePsSQ(job.targetEmail)}' -Type Shared`;
-    offboardStep(job, 'Conversion en boîte partagée', 'manual', psCmd5);
-    logAction(`[OFFBOARD][${jobId}] Exchange Online requis : ${psCmd5}`);
+    if (MOCK_GRAPH) {
+      await sleep(MOCK_DELAY * 0.8);
+      offboardStep(job, 'Conversion en boîte partagée', 'done', 'Boîte convertie en shared mailbox (mock)');
+    } else {
+      try {
+        await runExchangeScript({ Action: 'SetSharedMailbox', Identity: job.targetEmail });
+        offboardStep(job, 'Conversion en boîte partagée', 'done', 'Boîte convertie en shared mailbox');
+        logAction(`[OFFBOARD][${jobId}] ✅ Boîte convertie en shared mailbox`);
+      } catch (e) {
+        offboardStep(job, 'Conversion en boîte partagée', 'failed', e.message);
+        logAction(`[OFFBOARD][${jobId}] ❌ Conversion shared mailbox : ${e.message}`);
+        throw e;
+      }
+    }
 
     // 6 ── Accès à la boîte partagée (avant révocation licence !)
     offboardStep(job, 'Accès à la boîte partagée', 'running');
-    if (MOCK_GRAPH) await sleep(MOCK_DELAY * 0.5);
-    if (job.accessTo) {
-      const psCmd6 = `Add-MailboxPermission -Identity '${escapePsSQ(job.targetEmail)}' -User '${escapePsSQ(job.accessTo)}' -AccessRights FullAccess -AutoMapping $true`;
-      offboardStep(job, 'Accès à la boîte partagée', 'manual', psCmd6);
-      logAction(`[OFFBOARD][${jobId}] Exchange Online requis : ${psCmd6}`);
+    if (MOCK_GRAPH) {
+      await sleep(MOCK_DELAY * 0.5);
+      offboardStep(job, 'Accès à la boîte partagée', job.accessTo ? 'done' : 'skipped', job.accessTo ? `Accès accordé à ${job.accessTo} (mock)` : 'Aucun accès supplémentaire configuré');
+    } else if (job.accessTo) {
+      try {
+        await runExchangeScript({ Action: 'AddMailboxPermission', Identity: job.targetEmail, User: job.accessTo });
+        offboardStep(job, 'Accès à la boîte partagée', 'done', `Accès complet accordé à ${job.accessTo}`);
+        logAction(`[OFFBOARD][${jobId}] ✅ Accès boîte accordé à ${job.accessTo}`);
+      } catch (e) {
+        offboardStep(job, 'Accès à la boîte partagée', 'failed', e.message);
+        logAction(`[OFFBOARD][${jobId}] ❌ Accès boîte : ${e.message}`);
+        throw e;
+      }
     } else {
       offboardStep(job, 'Accès à la boîte partagée', 'skipped', 'Aucun accès supplémentaire configuré');
     }
@@ -1405,13 +1486,6 @@ async function executeOffboarding(jobId) {
       : 'Pas de transfert automatique configuré';
     offboardStep(job, "Configuration du transfert d'emails", 'done', fwdDetail);
     logAction(`[OFFBOARD][${jobId}] ${fwdDetail}`);
-
-    // Pause — attendre confirmation admin que le script Exchange a été exécuté
-    job.status = 'waitingForConfirmation';
-    logAction(`[OFFBOARD][${jobId}] En attente de confirmation script Exchange`);
-    await new Promise(resolve => { job._confirmResolve = resolve; });
-    job.status = 'running';
-    logAction(`[OFFBOARD][${jobId}] Confirmation reçue — révocation de la licence`);
 
     // 8 ── Révocation de la licence (en dernier — après conversion boîte partagée)
     offboardStep(job, 'Révocation de la licence', 'running');
