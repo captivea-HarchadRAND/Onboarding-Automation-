@@ -696,7 +696,7 @@ async function executeOnboarding(id) {
             if (/mail-enabled security/i.test(e.message) || /distribution list/i.test(e.message) || /Cannot Update/i.test(e.message)) {
               logAction(`[${id}] [4/4] ⚠️ Graph API refusé pour "${g.label}" — tentative via Exchange PowerShell…`);
               try {
-                await runExchangeScript({ Action: 'AddDistributionMember', Identity: g.id, Member: adUser.userPrincipalName });
+                await runExchangeScript({ Action: 'AddDistributionMember', Identity: g.exchangeEmail || g.id, Member: adUser.userPrincipalName });
                 logAction(`[${id}] [4/4] ✅ Ajouté via Exchange PowerShell au groupe "${g.label}"`);
               } catch (psErr) {
                 logAction(`[${id}] [4/4] ❌ Exchange PowerShell échoué pour "${g.label}" : ${psErr.message}`);
