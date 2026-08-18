@@ -752,15 +752,19 @@ async function executeOnboarding(id) {
 app.get('/api/onboardings', auth, async (req, res) => {
   const db = await getDB();
   const { status, limit } = req.query;
+  const isAdmin = req.user.role === 'admin';
   let sql = `SELECT * FROM onboardings WHERE is_mock=?`;
   const params = [MOCK_GRAPH ? 1 : 0];
+  if (!isAdmin) { sql += ` AND created_by=?`; params.push(req.user.id); }
   if (status) { sql += ` AND status=?`; params.push(status); }
   sql += ` ORDER BY created_at DESC`;
   if (limit) {
     const n = parseInt(limit, 10);
     if (Number.isInteger(n) && n > 0) { sql += ` LIMIT ?`; params.push(Math.min(n, 200)); }
   }
-  res.json(dbRows(db, sql, params));
+  const rows = dbRows(db, sql, params);
+  rows.forEach(r => delete r.temp_password);
+  res.json(rows);
 });
 
 app.get('/api/onboardings/:id', auth, async (req, res) => {
@@ -768,6 +772,8 @@ app.get('/api/onboardings/:id', auth, async (req, res) => {
   const db = await getDB();
   const onb = dbRow(db, `SELECT * FROM onboardings WHERE id=?`, [req.params.id]);
   if (!onb) return res.status(404).json({ error: 'Onboarding introuvable' });
+  if (req.user.role !== 'admin' && onb.created_by !== req.user.id)
+    return res.status(403).json({ error: 'Accès refusé' });
   const steps = dbRows(db,
     `SELECT * FROM onboarding_steps WHERE onboarding_id=? ORDER BY step_number`,
     [req.params.id]);
