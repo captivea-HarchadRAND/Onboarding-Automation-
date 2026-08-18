@@ -560,15 +560,6 @@ function GroupRows({ groups, setGroups, showLocation = false, showCities = false
             >✕</button>
           )}
           </div>
-          <input
-            type="email"
-            autoComplete="off"
-            placeholder="Email Exchange (optionnel — si distribution list, ex: sales@captivea.com)"
-            value={g.exchangeEmail || ''}
-            onChange={e => update(i, 'exchangeEmail', e.target.value)}
-            style={{ fontFamily: 'monospace', fontSize: 11, marginTop: 4, width: '100%', color: 'var(--muted)' }}
-          />
-
           {showCities && g.location && (
             !citiesOpen ? (
               <button
