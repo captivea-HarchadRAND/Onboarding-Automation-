@@ -727,10 +727,28 @@ async function executeOnboarding(id) {
             'X-GitHub-Api-Version': '2022-11-28',
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ email: onb.employee_email, role: 'direct_member' }),
+          body: JSON.stringify({ email: onb.employee_email, role: 'direct_member', team_ids: [] }),
         });
         if (ghRes.ok) {
           logAction(`[${id}] [5/5] ✅ Invitation GitHub envoyée à ${onb.employee_email}`);
+          // Ajouter au team "All" via son slug
+          const GITHUB_TEAM = process.env.GITHUB_TEAM_SLUG || 'all';
+          const teamRes = await fetch(`https://api.github.com/orgs/${encodeURIComponent(GITHUB_ORG)}/teams/${encodeURIComponent(GITHUB_TEAM)}/memberships/${encodeURIComponent(onb.employee_email)}`, {
+            method: 'PUT',
+            headers: {
+              'Authorization': `Bearer ${GITHUB_TOKEN}`,
+              'Accept': 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ role: 'member' }),
+          });
+          if (teamRes.ok) {
+            logAction(`[${id}] [5/5] ✅ Ajouté au team GitHub "${GITHUB_TEAM}"`);
+          } else {
+            const teamErr = await teamRes.json().catch(() => ({}));
+            logAction(`[${id}] [5/5] ⚠️ Team GitHub : ${teamErr.message || teamRes.status}`);
+          }
         } else {
           const ghErr = await ghRes.json().catch(() => ({}));
           logAction(`[${id}] [5/5] ⚠️ GitHub : ${ghErr.message || ghRes.status}`);
