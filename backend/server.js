@@ -713,6 +713,35 @@ async function executeOnboarding(id) {
       logAction(`[${id}] [4/4] ⏭️ Groupes SP/Comm — étape désactivée dans le schéma`);
     }
 
+    // Étape 5 — Invitation GitHub
+    const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+    const GITHUB_ORG   = process.env.GITHUB_ORG || 'Riss-Group';
+    if (GITHUB_TOKEN) {
+      logAction(`[${id}] [5/5] Invitation GitHub pour ${onb.employee_email}...`);
+      try {
+        const ghRes = await fetch(`https://api.github.com/orgs/${encodeURIComponent(GITHUB_ORG)}/invitations`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${GITHUB_TOKEN}`,
+            'Accept': 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ email: onb.employee_email, role: 'direct_member' }),
+        });
+        if (ghRes.ok) {
+          logAction(`[${id}] [5/5] ✅ Invitation GitHub envoyée à ${onb.employee_email}`);
+        } else {
+          const ghErr = await ghRes.json().catch(() => ({}));
+          logAction(`[${id}] [5/5] ⚠️ GitHub : ${ghErr.message || ghRes.status}`);
+        }
+      } catch (ghEx) {
+        logAction(`[${id}] [5/5] ⚠️ GitHub inaccessible : ${ghEx.message}`);
+      }
+    } else {
+      logAction(`[${id}] [5/5] ⏭️ GITHUB_TOKEN non configuré — étape ignorée`);
+    }
+
     db.run(`UPDATE onboardings SET status='done', completed_at=datetime('now') WHERE id=?`, [id]);
     saveDB();
     logAction(`[${id}] 🎉 Onboarding terminé pour ${onb.employee_email}`);
