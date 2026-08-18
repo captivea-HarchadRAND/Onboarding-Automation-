@@ -18,5 +18,6 @@ jobs:
           script: |
             cd /var/www/onboarding
             git pull origin main
-            cd backend && npm install --production
+            cd frontend && npm install && npm run build
+            cd ../backend && npm install --production
             pm2 restart onboarding
