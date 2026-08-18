@@ -450,6 +450,11 @@ function CommGroupRows({ groups, setGroups, locations, allowedRoles }) {
                 onChange={e => update(i, 'id', e.target.value)}
                 style={{ fontFamily: 'monospace', fontSize: 12, WebkitTextSecurity: g.id ? 'disc' : 'none', ...(g.id.trim() === '' ? { borderColor: 'rgba(239,68,68,.6)' } : {}) }} />
             </div>
+            <input type="email" autoComplete="off"
+              placeholder="Email Exchange (optionnel — si distribution list ou shared mailbox, ex: sales@captivea.com)"
+              value={g.exchangeEmail || ''}
+              onChange={e => update(i, 'exchangeEmail', e.target.value)}
+              style={{ fontFamily: 'monospace', fontSize: 11, marginTop: 6, width: '100%', color: 'var(--muted)' }} />
           </div>
         );
       })}
@@ -822,7 +827,7 @@ function TabOrg({ locations, onLocationsChange }) {
     try {
       const deptAssignments = communicationGroups
         .filter(g => g.id)
-        .map(g => ({ name: g.name, location: g.location, countries: g.countries || [], departments: g.departments || [], id: g.id }));
+        .map(g => ({ name: g.name, location: g.location, countries: g.countries || [], departments: g.departments || [], id: g.id, ...(g.exchangeEmail ? { exchangeEmail: g.exchangeEmail } : {}) }));
 
       // Sync Groupes→Pointage : retirer les assignments pour les groupes supprimés ou sans départements
       const validGroupIds = new Set(deptAssignments.filter(g => g.departments.length > 0).map(g => g.id));
