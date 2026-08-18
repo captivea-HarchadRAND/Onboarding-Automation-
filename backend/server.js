@@ -1077,7 +1077,7 @@ app.post('/api/admin/users', auth, requireRole('admin'), async (req, res) => {
         <p style="margin:0;color:rgba(255,255,255,.85);font-size:13px;letter-spacing:.5px;text-transform:uppercase">Onboarding M365</p>
       </td></tr>
       <tr><td style="padding:40px">
-        <p style="margin:0 0 8px;color:#1e293b;font-size:18px;font-weight:600">Bienvenue, ${name} 👋</p>
+        <p style="margin:0 0 8px;color:#1e293b;font-size:18px;font-weight:600">Bienvenue, ${escapeHtml(name)} 👋</p>
         <p style="margin:0 0 24px;color:#64748b;font-size:14px;line-height:1.7">Vous avez été invité à rejoindre la plateforme <strong>Onboarding M365</strong> de Captivea. Cliquez sur le bouton ci-dessous pour créer votre mot de passe et activer votre compte.</p>
         <div style="text-align:center;margin:28px 0">
           <a href="${inviteUrl}" style="display:inline-block;background:#4f46e5;color:#ffffff;text-decoration:none;font-size:15px;font-weight:600;padding:14px 32px;border-radius:10px;letter-spacing:-.2px">Activer mon compte →</a>
@@ -1568,6 +1568,10 @@ app.post('/api/offboarding/:id/confirm', auth, requireRole('admin'), (req, res) 
   res.json({ ok: true });
 });
 
+function escapeHtml(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
 // Échappe les métacaractères PowerShell pour les chaînes double-quotées : ` $ "
 function escapePsDQ(s) {
   return String(s ?? '').replace(/`/g, '``').replace(/\$/g, '`$').replace(/"/g, '`"').replace(/\r?\n/g, ' ');
@@ -1707,7 +1711,9 @@ app.get('/api/users/graph-search', auth, requireRole('admin'), async (req, res) 
 
   try {
     const token = await getOffboardToken();
-    const encoded = encodeURIComponent(q);
+    const safe = [...String(q)].filter(c => /[\p{L}\p{N} .\-@]/u.test(c)).join('').slice(0, 128).trim();
+    if (safe.length < 2) return res.json([]);
+    const encoded = encodeURIComponent(safe);
     const data = await graphOp(
       token, 'GET',
       `/users?$search="displayName:${encoded}" OR "mail:${encoded}"&$select=id,displayName,mail,userPrincipalName&$top=8&$orderby=displayName`,
