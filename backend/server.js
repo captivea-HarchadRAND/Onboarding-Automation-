@@ -760,6 +760,31 @@ async function executeOnboarding(id) {
       logAction(`[${id}] [5/5] ⏭️ GITHUB_TOKEN non configuré — étape ignorée`);
     }
 
+    // Étape 6 — Ajout au canal Teams (pays → teamsId, ville → channelId)
+    if (!MOCK_GRAPH && adUserId) {
+      const countryGroupsRaw = dbRow(db, `SELECT value FROM settings WHERE key='sharepoint_country_groups'`)?.value || '[]';
+      const countryGroupsCfg = (() => { try { return JSON.parse(countryGroupsRaw); } catch (_) { return []; } })();
+      const locationEntry = countryGroupsCfg.find(g => g.location === onb.location);
+      const teamsId = locationEntry?.teamsId?.trim();
+      const cityEntry = (locationEntry?.cities || []).find(c => c.name === onb.city);
+      const channelId = cityEntry?.channelId?.trim();
+      if (teamsId && channelId) {
+        logAction(`[${id}] [6/6] Ajout au canal Teams pour ${onb.city}...`);
+        try {
+          const msToken = await getOffboardToken();
+          const chRes = await graphOp(msToken, 'POST',
+            `/teams/${encodeURIComponent(teamsId)}/channels/${encodeURIComponent(channelId)}/members`,
+            { '@odata.type': '#microsoft.graph.aadUserConversationMember', roles: [], 'user@odata.bind': `https://graph.microsoft.com/v1.0/users('${adUserId}')` }
+          );
+          logAction(`[${id}] [6/6] ✅ Ajouté au canal Teams "${onb.city}"`);
+        } catch (teamsErr) {
+          logAction(`[${id}] [6/6] ⚠️ Teams : ${teamsErr.message}`);
+        }
+      } else {
+        logAction(`[${id}] [6/6] ⏭️ Teams Channel — teamsId ou channelId non configuré pour "${onb.location}/${onb.city}"`);
+      }
+    }
+
     db.run(`UPDATE onboardings SET status='done', completed_at=datetime('now') WHERE id=?`, [id]);
     saveDB();
     logAction(`[${id}] 🎉 Onboarding terminé pour ${onb.employee_email}`);

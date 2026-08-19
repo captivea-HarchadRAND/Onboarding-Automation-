@@ -560,6 +560,16 @@ function GroupRows({ groups, setGroups, showLocation = false, showCities = false
             >✕</button>
           )}
           </div>
+          {showLocation && (
+            <input
+              type="text"
+              autoComplete="off"
+              placeholder="Teams Group ID (optionnel, ex: a4cbd7cd-fa4f-4a6c-8e29-c97e8a834a19)"
+              value={g.teamsId || ''}
+              onChange={e => update(i, 'teamsId', e.target.value)}
+              style={{ fontFamily: 'monospace', fontSize: 11, marginTop: 4, width: '100%', color: 'var(--muted)' }}
+            />
+          )}
           {showCities && g.location && (
             !citiesOpen ? (
               <button
@@ -607,27 +617,37 @@ function GroupRows({ groups, setGroups, showLocation = false, showCities = false
                 </div>
 
                 {cities.map((c, ci) => (
-                  <div key={ci} style={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr auto', gap: 6, marginBottom: 6, alignItems: 'center' }}>
-                    <input
-                      placeholder="Nom de la ville"
-                      value={c.name || ''}
-                      onChange={e => updateCity(i, ci, 'name', e.target.value)}
-                      style={{ height: 30, fontSize: 12, ...(c.name?.trim() === '' && c.id?.trim() ? { borderColor: 'rgba(239,68,68,.6)' } : {}) }}
-                    />
+                  <div key={ci} style={{ marginBottom: 8 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr auto', gap: 6, alignItems: 'center' }}>
+                      <input
+                        placeholder="Nom de la ville"
+                        value={c.name || ''}
+                        onChange={e => updateCity(i, ci, 'name', e.target.value)}
+                        style={{ height: 30, fontSize: 12, ...(c.name?.trim() === '' && c.id?.trim() ? { borderColor: 'rgba(239,68,68,.6)' } : {}) }}
+                      />
+                      <input
+                        type="text"
+                        autoComplete="off"
+                        placeholder="Group Object ID"
+                        value={c.id || ''}
+                        onChange={e => updateCity(i, ci, 'id', e.target.value)}
+                        style={{ fontFamily: 'monospace', fontSize: 11, height: 30, WebkitTextSecurity: c.id ? 'disc' : 'none', ...(c.id?.trim() === '' && c.name?.trim() ? { borderColor: 'rgba(239,68,68,.6)' } : {}) }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeCity(i, ci)}
+                        title="Supprimer"
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', fontSize: 18, padding: '0 6px', lineHeight: 1, opacity: 0.6 }}
+                      >×</button>
+                    </div>
                     <input
                       type="text"
                       autoComplete="off"
-                      placeholder="Group Object ID"
-                      value={c.id || ''}
-                      onChange={e => updateCity(i, ci, 'id', e.target.value)}
-                      style={{ fontFamily: 'monospace', fontSize: 11, height: 30, WebkitTextSecurity: c.id ? 'disc' : 'none', ...(c.id?.trim() === '' && c.name?.trim() ? { borderColor: 'rgba(239,68,68,.6)' } : {}) }}
+                      placeholder="Teams Channel ID (optionnel, ex: 19:xxxx@thread.tacv2)"
+                      value={c.channelId || ''}
+                      onChange={e => updateCity(i, ci, 'channelId', e.target.value)}
+                      style={{ fontFamily: 'monospace', fontSize: 10, height: 26, marginTop: 3, width: 'calc(100% - 30px)', color: 'var(--muted)' }}
                     />
-                    <button
-                      type="button"
-                      onClick={() => removeCity(i, ci)}
-                      title="Supprimer"
-                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', fontSize: 18, padding: '0 6px', lineHeight: 1, opacity: 0.6 }}
-                    >×</button>
                   </div>
                 ))}
 
@@ -827,7 +847,7 @@ function TabOrg({ locations, onLocationsChange }) {
       // Nettoyer les villes vides (nom ET id non renseignés) avant sauvegarde
       const cleanCountryGroups = countryGroups.map(g => ({
         ...g,
-        cities: (g.cities || []).filter(c => c.name?.trim() && c.id?.trim()).map(c => ({ name: c.name.trim(), id: c.id.trim() })),
+        cities: (g.cities || []).filter(c => c.name?.trim() && c.id?.trim()).map(c => ({ name: c.name.trim(), id: c.id.trim(), ...(c.channelId?.trim() ? { channelId: c.channelId.trim() } : {}) })),
       }));
 
       await api.put('/api/admin/settings', {
