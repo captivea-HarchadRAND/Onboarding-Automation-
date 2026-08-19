@@ -765,7 +765,7 @@ async function executeOnboarding(id) {
       const countryGroupsRaw = dbRow(db, `SELECT value FROM settings WHERE key='sharepoint_country_groups'`)?.value || '[]';
       const countryGroupsCfg = (() => { try { return JSON.parse(countryGroupsRaw); } catch (_) { return []; } })();
       const locationEntry = countryGroupsCfg.find(g => g.location === onb.location);
-      const teamsId = locationEntry?.teamsId?.trim();
+      const teamsId = locationEntry?.id?.trim();
       const cityEntry = (locationEntry?.cities || []).find(c => c.name === onb.city);
       const channelId = cityEntry?.channelId?.trim();
       if (teamsId && channelId) {

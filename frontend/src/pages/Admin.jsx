@@ -560,16 +560,6 @@ function GroupRows({ groups, setGroups, showLocation = false, showCities = false
             >✕</button>
           )}
           </div>
-          {showLocation && (
-            <input
-              type="text"
-              autoComplete="off"
-              placeholder="Teams Group ID (optionnel, ex: a4cbd7cd-fa4f-4a6c-8e29-c97e8a834a19)"
-              value={g.teamsId || ''}
-              onChange={e => update(i, 'teamsId', e.target.value)}
-              style={{ fontFamily: 'monospace', fontSize: 11, marginTop: 4, width: '100%', color: 'var(--muted)' }}
-            />
-          )}
           {showCities && g.location && (
             !citiesOpen ? (
               <button
