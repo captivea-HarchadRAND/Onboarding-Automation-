@@ -692,6 +692,10 @@ async function executeOnboarding(id) {
           try {
             await addMemberToGroup(g.id, adUserId);
             logAction(`[${id}] [4/4] ✅ Ajouté au groupe SharePoint "${g.label}"`);
+            // Activer autoSubscribeNewMembers pour que Microsoft envoie l'email de bienvenue
+            try {
+              await graphOp(token, 'PATCH', `/groups/${encodeURIComponent(g.id)}`, { autoSubscribeNewMembers: true });
+            } catch (_) { /* non bloquant */ }
           } catch (e) {
             if (/mail-enabled security/i.test(e.message) || /distribution list/i.test(e.message) || /Cannot Update/i.test(e.message)) {
               logAction(`[${id}] [4/4] ⚠️ Graph API refusé pour "${g.label}" — tentative via Exchange PowerShell…`);
