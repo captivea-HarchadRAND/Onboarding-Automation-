@@ -549,6 +549,161 @@ function updateStep(db, onboardingId, stepNumber, status, errorMessage = null) {
   saveDB();
 }
 
+async function executeOnboardingBackground(id, adUserId, userPrincipalName, step4Enabled) {
+  const db = await getDB();
+  const onb = dbRow(db, `SELECT * FROM onboardings WHERE id=?`, [id]);
+  if (!onb) return;
+
+  logAction(`[${id}] [BG] Démarrage de l'intégration groupes/Teams/GitHub pour ${onb.employee_email}`);
+
+  let bgToken = null;
+  try { bgToken = await getOffboardToken(); } catch (_) {}
+
+  // Étape 4 — Groupes SharePoint & Communication
+  if (step4Enabled) {
+    updateStep(db, id, 4, 'running');
+    const globalGroups        = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='sharepoint_global_groups'`)?.value  || '[]');
+    const countryGroups       = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='sharepoint_country_groups'`)?.value || '[]');
+    const deptAssignments     = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='department_assignments'`)?.value     || '[]');
+    const pointageCommAssign  = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='pointage_comm_assignments'`)?.value  || '[]');
+    const location            = onb.location || '';
+    const jobRole             = onb.job_role || '';
+    const city                = onb.city || '';
+    const cityGroups = countryGroups
+      .filter(g => g.location === location)
+      .flatMap(g => g.cities || [])
+      .filter(c => c.id && c.name === city)
+      .map(c => ({ id: c.id, label: c.name }));
+    const commGroups = [
+      ...deptAssignments.filter(g => {
+        const depts = g.departments || [];
+        return g.id &&
+          (depts.length === 0 || depts.includes(jobRole)) &&
+          (g.location === 'ALL' || (g.countries || []).includes(location));
+      }).map(g => ({ id: g.id, label: g.name || g.id, exchangeEmail: g.exchangeEmail })),
+      ...pointageCommAssign.filter(g =>
+        g.id && g.department === jobRole && g.location === location
+      ).map(g => ({ id: g.id, label: g.label || g.id })),
+    ].filter((g, i, arr) => arr.findIndex(x => x.id === g.id) === i);
+
+    const spGroups = [
+      ...globalGroups.filter(g => g.id),
+      ...countryGroups.filter(g => g.id && g.location === location),
+      ...cityGroups,
+      ...commGroups,
+    ]
+      .filter(g => g.id && g.id !== onb.group_id)
+      .filter((g, i, arr) => arr.findIndex(x => x.id === g.id) === i);
+
+    if (spGroups.length === 0) {
+      logAction(`[${id}] [BG] Aucun groupe SharePoint configuré — étape ignorée`);
+    } else {
+      for (const g of spGroups) {
+        try {
+          await addMemberToGroup(g.id, adUserId);
+          logAction(`[${id}] [BG] ✅ Ajouté au groupe "${g.label}"`);
+          if (bgToken) {
+            try {
+              await graphOp(bgToken, 'PATCH', `/groups/${encodeURIComponent(g.id)}`, { autoSubscribeNewMembers: true });
+            } catch (_) { /* non bloquant */ }
+          }
+        } catch (e) {
+          if (/mail-enabled security/i.test(e.message) || /distribution list/i.test(e.message) || /Cannot Update/i.test(e.message)) {
+            logAction(`[${id}] [BG] ⚠️ Graph API refusé pour "${g.label}" — tentative via Exchange PowerShell…`);
+            try {
+              await runExchangeScript({ Action: 'AddDistributionMember', Identity: g.exchangeEmail || g.id, Member: userPrincipalName });
+              logAction(`[${id}] [BG] ✅ Ajouté via Exchange PowerShell au groupe "${g.label}"`);
+            } catch (psErr) {
+              logAction(`[${id}] [BG] ❌ Exchange PowerShell échoué pour "${g.label}" : ${psErr.message}`);
+            }
+          } else {
+            logAction(`[${id}] [BG] ❌ Groupe "${g.label}" : ${e.message}`);
+          }
+        }
+      }
+    }
+    updateStep(db, id, 4, 'done');
+    saveDB();
+  } else {
+    updateStep(db, id, 4, 'skipped');
+    logAction(`[${id}] [BG] ⏭️ Groupes SP/Comm — étape désactivée dans le schéma`);
+  }
+
+  // Étape 5 — Invitation GitHub
+  const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+  const GITHUB_ORG   = process.env.GITHUB_ORG || 'Riss-Group';
+  if (GITHUB_TOKEN) {
+    logAction(`[${id}] [BG] Invitation GitHub pour ${onb.employee_email}...`);
+    try {
+      const ghRes = await fetch(`https://api.github.com/orgs/${encodeURIComponent(GITHUB_ORG)}/invitations`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${GITHUB_TOKEN}`,
+          'Accept': 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ email: onb.employee_email, role: 'direct_member', team_ids: [] }),
+      });
+      if (ghRes.ok) {
+        logAction(`[${id}] [BG] ✅ Invitation GitHub envoyée à ${onb.employee_email}`);
+        const GITHUB_TEAM = process.env.GITHUB_TEAM_SLUG || 'all';
+        const teamRes = await fetch(`https://api.github.com/orgs/${encodeURIComponent(GITHUB_ORG)}/teams/${encodeURIComponent(GITHUB_TEAM)}/memberships/${encodeURIComponent(onb.employee_email)}`, {
+          method: 'PUT',
+          headers: {
+            'Authorization': `Bearer ${GITHUB_TOKEN}`,
+            'Accept': 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ role: 'member' }),
+        });
+        if (teamRes.ok) {
+          logAction(`[${id}] [BG] ✅ Ajouté au team GitHub "${GITHUB_TEAM}"`);
+        } else {
+          const teamErr = await teamRes.json().catch(() => ({}));
+          logAction(`[${id}] [BG] ⚠️ Team GitHub : ${teamErr.message || teamRes.status}`);
+        }
+      } else {
+        const ghErr = await ghRes.json().catch(() => ({}));
+        logAction(`[${id}] [BG] ⚠️ GitHub : ${ghErr.message || ghRes.status}`);
+      }
+    } catch (ghEx) {
+      logAction(`[${id}] [BG] ⚠️ GitHub inaccessible : ${ghEx.message}`);
+    }
+  } else {
+    logAction(`[${id}] [BG] ⏭️ GITHUB_TOKEN non configuré — étape ignorée`);
+  }
+
+  // Étape 6 — Ajout au canal Teams
+  if (!MOCK_GRAPH && adUserId) {
+    const countryGroupsRaw = dbRow(db, `SELECT value FROM settings WHERE key='sharepoint_country_groups'`)?.value || '[]';
+    const countryGroupsCfg = (() => { try { return JSON.parse(countryGroupsRaw); } catch (_) { return []; } })();
+    const locationEntry = countryGroupsCfg.find(g => g.location === onb.location);
+    const teamsId   = locationEntry?.id?.trim();
+    const cityEntry = (locationEntry?.cities || []).find(c => c.name === onb.city);
+    const channelId = cityEntry?.channelId?.trim();
+    if (teamsId && channelId && bgToken) {
+      logAction(`[${id}] [BG] Ajout au canal Teams pour ${onb.city}...`);
+      try {
+        await graphOp(bgToken, 'POST',
+          `/teams/${encodeURIComponent(teamsId)}/channels/${encodeURIComponent(channelId)}/members`,
+          { '@odata.type': '#microsoft.graph.aadUserConversationMember', roles: [], 'user@odata.bind': `https://graph.microsoft.com/v1.0/users('${adUserId}')` }
+        );
+        logAction(`[${id}] [BG] ✅ Ajouté au canal Teams "${onb.city}"`);
+      } catch (teamsErr) {
+        logAction(`[${id}] [BG] ⚠️ Teams : ${teamsErr.message}`);
+      }
+    } else if (!teamsId || !channelId) {
+      logAction(`[${id}] [BG] ⏭️ Teams Channel — teamsId ou channelId non configuré pour "${onb.location}/${onb.city}"`);
+    }
+  }
+
+  db.run(`UPDATE onboardings SET status='done', completed_at=datetime('now') WHERE id=?`, [id]);
+  saveDB();
+  logAction(`[${id}] 🎉 Intégration complète terminée pour ${onb.employee_email}`);
+}
+
 async function executeOnboarding(id) {
   const db = await getDB();
   const onb = dbRow(db, `SELECT * FROM onboardings WHERE id=?`, [id]);
@@ -649,149 +804,21 @@ async function executeOnboarding(id) {
       logAction(`[${id}] [3/4] ⏭️ Licence — étape désactivée dans le schéma`);
     }
 
-    // Étape 4 — Groupes SharePoint
-    if (step4Enabled) {
-      updateStep(db, id, 4, 'running');
-      const globalGroups    = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='sharepoint_global_groups'`)?.value  || '[]');
-      const countryGroups   = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='sharepoint_country_groups'`)?.value || '[]');
-      const pointageGroups  = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='pointage_assignments'`)?.value      || '[]');
-      const deptAssignments      = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='department_assignments'`)?.value       || '[]');
-      const pointageCommAssign   = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='pointage_comm_assignments'`)?.value    || '[]');
-      const location             = onb.location || '';
-      const jobRole              = onb.job_role || '';
-      const city                 = onb.city || '';
-      const cityGroups = countryGroups
-        .filter(g => g.location === location)
-        .flatMap(g => g.cities || [])
-        .filter(c => c.id && c.name === city)
-        .map(c => ({ id: c.id, label: c.name }));
-      const commGroups = [
-        ...deptAssignments.filter(g => {
-          const depts = g.departments || [];
-          return g.id &&
-            (depts.length === 0 || depts.includes(jobRole)) &&
-            (g.location === 'ALL' || (g.countries || []).includes(location));
-        }).map(g => ({ id: g.id, label: g.name || g.id })),
-        ...pointageCommAssign.filter(g =>
-          g.id && g.department === jobRole && g.location === location
-        ).map(g => ({ id: g.id, label: g.label || g.id })),
-      ].filter((g, i, arr) => arr.findIndex(x => x.id === g.id) === i);
-
-      const spGroups = [
-        ...globalGroups.filter(g => g.id),
-        ...countryGroups.filter(g => g.id && g.location === location),
-        ...cityGroups,
-        ...commGroups,
-      ]
-        .filter(g => g.id && g.id !== onb.group_id)
-        .filter((g, i, arr) => arr.findIndex(x => x.id === g.id) === i);
-      if (spGroups.length === 0) {
-        logAction(`[${id}] [4/4] Aucun groupe SharePoint configuré — étape ignorée`);
-      } else {
-        for (const g of spGroups) {
-          try {
-            await addMemberToGroup(g.id, adUserId);
-            logAction(`[${id}] [4/4] ✅ Ajouté au groupe SharePoint "${g.label}"`);
-            // Activer autoSubscribeNewMembers pour que Microsoft envoie l'email de bienvenue
-            try {
-              await graphOp(token, 'PATCH', `/groups/${encodeURIComponent(g.id)}`, { autoSubscribeNewMembers: true });
-            } catch (_) { /* non bloquant */ }
-          } catch (e) {
-            if (/mail-enabled security/i.test(e.message) || /distribution list/i.test(e.message) || /Cannot Update/i.test(e.message)) {
-              logAction(`[${id}] [4/4] ⚠️ Graph API refusé pour "${g.label}" — tentative via Exchange PowerShell…`);
-              try {
-                await runExchangeScript({ Action: 'AddDistributionMember', Identity: g.exchangeEmail || g.id, Member: adUser.userPrincipalName });
-                logAction(`[${id}] [4/4] ✅ Ajouté via Exchange PowerShell au groupe "${g.label}"`);
-              } catch (psErr) {
-                logAction(`[${id}] [4/4] ❌ Exchange PowerShell échoué pour "${g.label}" : ${psErr.message}`);
-              }
-            } else {
-              throw e;
-            }
-          }
-        }
-      }
-      updateStep(db, id, 4, 'done');
-    } else {
-      updateStep(db, id, 4, 'skipped');
-      logAction(`[${id}] [4/4] ⏭️ Groupes SP/Comm — étape désactivée dans le schéma`);
-    }
-
-    // Étape 5 — Invitation GitHub
-    const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
-    const GITHUB_ORG   = process.env.GITHUB_ORG || 'Riss-Group';
-    if (GITHUB_TOKEN) {
-      logAction(`[${id}] [5/5] Invitation GitHub pour ${onb.employee_email}...`);
-      try {
-        const ghRes = await fetch(`https://api.github.com/orgs/${encodeURIComponent(GITHUB_ORG)}/invitations`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${GITHUB_TOKEN}`,
-            'Accept': 'application/vnd.github+json',
-            'X-GitHub-Api-Version': '2022-11-28',
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ email: onb.employee_email, role: 'direct_member', team_ids: [] }),
-        });
-        if (ghRes.ok) {
-          logAction(`[${id}] [5/5] ✅ Invitation GitHub envoyée à ${onb.employee_email}`);
-          // Ajouter au team "All" via son slug
-          const GITHUB_TEAM = process.env.GITHUB_TEAM_SLUG || 'all';
-          const teamRes = await fetch(`https://api.github.com/orgs/${encodeURIComponent(GITHUB_ORG)}/teams/${encodeURIComponent(GITHUB_TEAM)}/memberships/${encodeURIComponent(onb.employee_email)}`, {
-            method: 'PUT',
-            headers: {
-              'Authorization': `Bearer ${GITHUB_TOKEN}`,
-              'Accept': 'application/vnd.github+json',
-              'X-GitHub-Api-Version': '2022-11-28',
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ role: 'member' }),
-          });
-          if (teamRes.ok) {
-            logAction(`[${id}] [5/5] ✅ Ajouté au team GitHub "${GITHUB_TEAM}"`);
-          } else {
-            const teamErr = await teamRes.json().catch(() => ({}));
-            logAction(`[${id}] [5/5] ⚠️ Team GitHub : ${teamErr.message || teamRes.status}`);
-          }
-        } else {
-          const ghErr = await ghRes.json().catch(() => ({}));
-          logAction(`[${id}] [5/5] ⚠️ GitHub : ${ghErr.message || ghRes.status}`);
-        }
-      } catch (ghEx) {
-        logAction(`[${id}] [5/5] ⚠️ GitHub inaccessible : ${ghEx.message}`);
-      }
-    } else {
-      logAction(`[${id}] [5/5] ⏭️ GITHUB_TOKEN non configuré — étape ignorée`);
-    }
-
-    // Étape 6 — Ajout au canal Teams (pays → teamsId, ville → channelId)
-    if (!MOCK_GRAPH && adUserId) {
-      const countryGroupsRaw = dbRow(db, `SELECT value FROM settings WHERE key='sharepoint_country_groups'`)?.value || '[]';
-      const countryGroupsCfg = (() => { try { return JSON.parse(countryGroupsRaw); } catch (_) { return []; } })();
-      const locationEntry = countryGroupsCfg.find(g => g.location === onb.location);
-      const teamsId = locationEntry?.id?.trim();
-      const cityEntry = (locationEntry?.cities || []).find(c => c.name === onb.city);
-      const channelId = cityEntry?.channelId?.trim();
-      if (teamsId && channelId) {
-        logAction(`[${id}] [6/6] Ajout au canal Teams pour ${onb.city}...`);
-        try {
-          const msToken = await getOffboardToken();
-          const chRes = await graphOp(msToken, 'POST',
-            `/teams/${encodeURIComponent(teamsId)}/channels/${encodeURIComponent(channelId)}/members`,
-            { '@odata.type': '#microsoft.graph.aadUserConversationMember', roles: [], 'user@odata.bind': `https://graph.microsoft.com/v1.0/users('${adUserId}')` }
-          );
-          logAction(`[${id}] [6/6] ✅ Ajouté au canal Teams "${onb.city}"`);
-        } catch (teamsErr) {
-          logAction(`[${id}] [6/6] ⚠️ Teams : ${teamsErr.message}`);
-        }
-      } else {
-        logAction(`[${id}] [6/6] ⏭️ Teams Channel — teamsId ou channelId non configuré pour "${onb.location}/${onb.city}"`);
-      }
-    }
-
-    db.run(`UPDATE onboardings SET status='done', completed_at=datetime('now') WHERE id=?`, [id]);
+    // Phase 1 terminée — compte + licence prêts
+    // Marquer comme partial pour que le frontend affiche immédiatement les credentials
+    db.run(`UPDATE onboardings SET status='partial' WHERE id=?`, [id]);
     saveDB();
-    logAction(`[${id}] 🎉 Onboarding terminé pour ${onb.employee_email}`);
+    logAction(`[${id}] ✅ Compte + licence prêts — intégration groupes/Teams/GitHub dans 60s en background`);
+
+    // Lancer la phase 2 (groupes, GitHub, Teams) en background après 60s
+    const _bgUserId = adUserId;
+    const _bgUpn    = adUser.userPrincipalName;
+    const _bgStep4  = step4Enabled;
+    setTimeout(() => {
+      executeOnboardingBackground(id, _bgUserId, _bgUpn, _bgStep4).catch(err =>
+        logAction(`[${id}] ❌ Background error : ${err.message}`)
+      );
+    }, 60 * 1000);
 
   } catch (err) {
     logAction(`[${id}] ❌ Erreur : ${err.message}`);

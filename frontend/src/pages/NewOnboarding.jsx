@@ -568,7 +568,7 @@ export default function NewOnboarding() {
       api.get(`/api/onboardings/${onboardingId}`).then(data => {
         if (data.temp_password) oneTimePwdRef.current = data.temp_password;
         setOnboarding(data);
-        if (data.status === 'done' || data.status === 'failed') {
+        if (data.status === 'done' || data.status === 'partial' || data.status === 'failed') {
           clearInterval(pollRef.current);
           setStep(5);
         }
@@ -1276,16 +1276,22 @@ export default function NewOnboarding() {
       {/* ── Step 5: Résultat ── */}
       {step === 5 && onboarding && (
         <div className="card">
-          {onboarding.status === 'done' ? (
+          {(onboarding.status === 'done' || onboarding.status === 'partial') ? (
             <div style={{ textAlign: 'center', padding: '16px 0' }}>
               <div style={{ width: 56, height: 56, borderRadius: 16, background: 'rgba(34,197,94,.12)', border: '1px solid rgba(34,197,94,.25)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px', color: '#22c55e' }}>
                 <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4 12 14.01l-3-3"/></svg>
               </div>
-              <h2 style={{ fontSize: 18, fontWeight: 700, color: 'var(--success)', marginBottom: 8 }}>Onboarding terminé !</h2>
+              <h2 style={{ fontSize: 18, fontWeight: 700, color: 'var(--success)', marginBottom: 8 }}>Compte créé !</h2>
               <p style={{ color: 'var(--text2)', fontSize: 14, marginBottom: 4 }}>
                 <strong>{form.firstName} {form.lastName}</strong> est maintenant dans Microsoft 365.
                 {forceChangePwd && <>{' '}<span style={{ fontSize: 13, color: 'var(--muted)' }}>Le mot de passe devra être changé à la première connexion.</span></>}
               </p>
+              {onboarding.status === 'partial' && (
+                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 7, background: 'rgba(99,102,241,.08)', border: '1px solid rgba(99,102,241,.2)', borderRadius: 8, padding: '7px 13px', marginBottom: 4, marginTop: 4 }}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+                  <span style={{ fontSize: 12, color: 'var(--primary)' }}>Ajout aux groupes SharePoint, Teams & GitHub en cours en arrière-plan…</span>
+                </div>
+              )}
 
               {(oneTimePwdRef.current || onboarding.employee_email) && (
                 <div style={{ margin: '16px auto 20px', maxWidth: 420, borderRadius: 10, border: '1px solid var(--border)', overflow: 'hidden' }}>
