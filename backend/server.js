@@ -850,6 +850,98 @@ async function executeOnboarding(id) {
   }
 }
 
+// ─── Manual onboarding (compte M365 existant) ────────────────────────────────
+
+app.post('/api/onboardings/manual', auth, async (req, res) => {
+  const { email, groupId, groupName } = req.body;
+
+  if (!isValidEmail(email?.trim()))
+    return res.status(400).json({ error: 'Email invalide' });
+  const tooLong = (s, n) => typeof s === 'string' && s.length > n;
+  if (tooLong(groupName, 256))
+    return res.status(400).json({ error: 'Nom de groupe trop long' });
+  const idOk = (v) => isValidUUID(v) || (MOCK_GRAPH && /^mock-[\w-]+$/.test(v));
+  if (!idOk(groupId))
+    return res.status(400).json({ error: 'Identifiant de groupe invalide' });
+
+  const { graphFetch } = require('./lib/graph');
+
+  // 1. Look up user in Azure AD
+  let adUser;
+  try {
+    adUser = await graphFetch(`/users/${encodeURIComponent(email.trim())}?$select=id,displayName`);
+  } catch (e) {
+    if (e.graphStatus === 404) return res.status(404).json({ error: 'Utilisateur introuvable dans Azure AD' });
+    logAction(`[manual] ❌ Lookup AD ${email} : ${e.message}`);
+    return res.status(500).json({ error: e.message });
+  }
+
+  // 2. Add to group — detect "already member"
+  let skipped = false;
+  try {
+    await graphFetch(`/groups/${encodeURIComponent(groupId)}/members/$ref`, {
+      method: 'POST',
+      body: { '@odata.id': `https://graph.microsoft.com/v1.0/directoryObjects/${adUser.id}` },
+    });
+    logAction(`[manual] ✅ ${adUser.displayName} ajouté au groupe "${groupName}"`);
+  } catch (e) {
+    if (e.graphStatus === 400 && /already exist/i.test(e.message || '')) {
+      skipped = true;
+      logAction(`[manual] ⏭️ ${adUser.displayName} déjà membre de "${groupName}"`);
+    } else {
+      logAction(`[manual] ❌ Ajout groupe "${groupName}" : ${e.message}`);
+      return res.status(500).json({ error: e.message });
+    }
+  }
+
+  // 3. GitHub invitation
+  let githubInvited = false;
+  const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+  const GITHUB_ORG   = process.env.GITHUB_ORG || 'Riss-Group';
+  if (GITHUB_TOKEN) {
+    try {
+      const ghRes = await fetch(`https://api.github.com/orgs/${encodeURIComponent(GITHUB_ORG)}/invitations`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${GITHUB_TOKEN}`,
+          'Accept': 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ email: email.trim(), role: 'direct_member', team_ids: [] }),
+      });
+      if (ghRes.ok) {
+        githubInvited = true;
+        logAction(`[manual] ✅ Invitation GitHub envoyée à ${email}`);
+        const GITHUB_TEAM = process.env.GITHUB_TEAM_SLUG || 'all';
+        const teamRes = await fetch(`https://api.github.com/orgs/${encodeURIComponent(GITHUB_ORG)}/teams/${encodeURIComponent(GITHUB_TEAM)}/memberships/${encodeURIComponent(email.trim())}`, {
+          method: 'PUT',
+          headers: {
+            'Authorization': `Bearer ${GITHUB_TOKEN}`,
+            'Accept': 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ role: 'member' }),
+        });
+        if (teamRes.ok) {
+          logAction(`[manual] ✅ Ajouté au team GitHub "${GITHUB_TEAM}"`);
+        } else {
+          const teamErr = await teamRes.json().catch(() => ({}));
+          logAction(`[manual] ⚠️ Team GitHub : ${teamErr.message || teamRes.status}`);
+        }
+      } else {
+        const ghErr = await ghRes.json().catch(() => ({}));
+        logAction(`[manual] ⚠️ GitHub : ${ghErr.message || ghRes.status}`);
+      }
+    } catch (ghEx) {
+      logAction(`[manual] ⚠️ GitHub inaccessible : ${ghEx.message}`);
+    }
+  }
+
+  return res.json({ ok: true, skipped, githubInvited, displayName: adUser.displayName, groupName });
+});
+
 // ─── Onboarding routes ────────────────────────────────────────────────────────
 
 app.get('/api/onboardings', auth, async (req, res) => {

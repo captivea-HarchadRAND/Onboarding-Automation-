@@ -10,6 +10,7 @@ import OnboardingDetail from './pages/OnboardingDetail';
 import Admin from './pages/Admin';
 import Security from './pages/Security';
 import Offboarding from './pages/Offboarding';
+import ManualOnboarding from './pages/ManualOnboarding';
 
 function Guard({ children, adminOnly = false }) {
   const { user } = useUser();
@@ -28,6 +29,7 @@ function AppRoutes() {
       <Route element={<Guard><Layout /></Guard>}>
         <Route index element={<Dashboard />} />
         <Route path="new" element={<NewOnboarding />} />
+        <Route path="new/manual" element={<ManualOnboarding />} />
         <Route path="history" element={<History />} />
         <Route path="history/:id" element={<OnboardingDetail />} />
         <Route path="admin" element={<Guard adminOnly><Admin /></Guard>} />
