@@ -1,0 +1,949 @@
+<title>Onboarding Automation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=JetBrains+Mono:wght@400;500&display=swap">
+
+<style>
+  /* ── Tokens ───────────────────────────────────────────────────────── */
+  :root {
+    --bg:          #F7F8FA;
+    --bg2:         #EDEEF2;
+    --sidebar-bg:  #1A1F2E;
+    --sidebar-text:#A8B3CC;
+    --sidebar-active: #4C7BFF;
+    --surface:     #FFFFFF;
+    --border:      #DDE1EB;
+    --text:        #111827;
+    --text2:       #4B5563;
+    --muted:       #7C869B;
+    --accent:      #4C7BFF;
+    --accent-dim:  rgba(76,123,255,.12);
+    --code-bg:     #111827;
+    --code-text:   #E2E8F0;
+    --success:     #16A34A;
+    --warning:     #D97706;
+    --danger:      #DC2626;
+    --tag-bg:      rgba(76,123,255,.1);
+    --tag-text:    #3B6FEE;
+    --note-bg:     rgba(245,158,11,.08);
+    --note-border: rgba(245,158,11,.35);
+    --tip-bg:      rgba(22,163,74,.08);
+    --tip-border:  rgba(22,163,74,.3);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:          #0C0F14;
+      --bg2:         #141820;
+      --sidebar-bg:  #0A0D12;
+      --sidebar-text:#7A899E;
+      --sidebar-active: #6590FF;
+      --surface:     #141820;
+      --border:      #252B38;
+      --text:        #E9EDF7;
+      --text2:       #8B96B0;
+      --muted:       #5A6680;
+      --accent:      #6590FF;
+      --accent-dim:  rgba(101,144,255,.14);
+      --code-bg:     #090C11;
+      --code-text:   #CBD5E1;
+      --success:     #22C55E;
+      --warning:     #F59E0B;
+      --danger:      #EF4444;
+      --tag-bg:      rgba(101,144,255,.15);
+      --tag-text:    #849DFF;
+      --note-bg:     rgba(245,158,11,.07);
+      --note-border: rgba(245,158,11,.25);
+      --tip-bg:      rgba(34,197,94,.07);
+      --tip-border:  rgba(34,197,94,.22);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:          #0C0F14;
+    --bg2:         #141820;
+    --sidebar-bg:  #0A0D12;
+    --sidebar-text:#7A899E;
+    --sidebar-active: #6590FF;
+    --surface:     #141820;
+    --border:      #252B38;
+    --text:        #E9EDF7;
+    --text2:       #8B96B0;
+    --muted:       #5A6680;
+    --accent:      #6590FF;
+    --accent-dim:  rgba(101,144,255,.14);
+    --code-bg:     #090C11;
+    --code-text:   #CBD5E1;
+    --success:     #22C55E;
+    --warning:     #F59E0B;
+    --danger:      #EF4444;
+    --tag-bg:      rgba(101,144,255,.15);
+    --tag-text:    #849DFF;
+    --note-bg:     rgba(245,158,11,.07);
+    --note-border: rgba(245,158,11,.25);
+    --tip-bg:      rgba(34,197,94,.07);
+    --tip-border:  rgba(34,197,94,.22);
+  }
+
+  /* ── Reset & base ──────────────────────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: 'IBM Plex Sans', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 15px;
+    line-height: 1.7;
+    display: flex;
+    min-height: 100vh;
+  }
+
+  /* ── Sidebar ───────────────────────────────────────────────────────── */
+  .sidebar {
+    width: 252px;
+    flex-shrink: 0;
+    background: var(--sidebar-bg);
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    padding: 28px 0 40px;
+    scrollbar-width: thin;
+    scrollbar-color: #2A3040 transparent;
+  }
+  .sidebar-brand {
+    padding: 0 20px 24px;
+    border-bottom: 1px solid rgba(255,255,255,.06);
+    margin-bottom: 16px;
+  }
+  .sidebar-brand-name {
+    font-family: 'Sora', sans-serif;
+    font-weight: 700;
+    font-size: 14px;
+    color: #E9EDF7;
+    letter-spacing: -.2px;
+  }
+  .sidebar-brand-sub {
+    font-size: 11px;
+    color: #4A566E;
+    margin-top: 2px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .sidebar-section {
+    padding: 0 12px;
+    margin-bottom: 4px;
+  }
+  .sidebar-group-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: .8px;
+    text-transform: uppercase;
+    color: #3A4760;
+    padding: 8px 8px 4px;
+  }
+  .sidebar-link {
+    display: block;
+    padding: 5px 10px;
+    border-radius: 6px;
+    font-size: 13px;
+    color: var(--sidebar-text);
+    text-decoration: none;
+    transition: color .15s, background .15s;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .sidebar-link:hover { color: #C8D2E8; background: rgba(255,255,255,.05); }
+  .sidebar-link.active { color: var(--sidebar-active); background: rgba(76,123,255,.12); font-weight: 500; }
+
+  /* ── Main content ──────────────────────────────────────────────────── */
+  .main {
+    flex: 1;
+    min-width: 0;
+    padding: 52px 60px 80px;
+  }
+  @media (max-width: 900px) {
+    .sidebar { display: none; }
+    .main { padding: 32px 24px 60px; }
+  }
+
+  .content { max-width: 720px; }
+
+  /* ── Typography ────────────────────────────────────────────────────── */
+  h1 {
+    font-family: 'Sora', sans-serif;
+    font-size: 32px;
+    font-weight: 700;
+    line-height: 1.2;
+    letter-spacing: -.5px;
+    color: var(--text);
+    text-wrap: balance;
+    margin-bottom: 10px;
+  }
+  h2 {
+    font-family: 'Sora', sans-serif;
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: -.3px;
+    color: var(--text);
+    text-wrap: balance;
+    margin: 52px 0 16px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+  }
+  h3 {
+    font-family: 'Sora', sans-serif;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+    margin: 28px 0 10px;
+  }
+  p { color: var(--text2); margin-bottom: 14px; }
+  p:last-child { margin-bottom: 0; }
+  strong { color: var(--text); font-weight: 600; }
+  em { font-style: italic; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ── Lead ──────────────────────────────────────────────────────────── */
+  .lead {
+    font-size: 16px;
+    color: var(--text2);
+    margin-bottom: 28px;
+    line-height: 1.75;
+  }
+
+  /* ── Badges ────────────────────────────────────────────────────────── */
+  .badges { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 36px; }
+  .badge {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    padding: 3px 9px;
+    border-radius: 4px;
+    background: var(--tag-bg);
+    color: var(--tag-text);
+    border: 1px solid rgba(76,123,255,.2);
+    white-space: nowrap;
+  }
+  .badge-green { background: rgba(22,163,74,.1); color: var(--success); border-color: rgba(22,163,74,.25); }
+  .badge-slate { background: var(--bg2); color: var(--muted); border-color: var(--border); }
+
+  /* ── Code ──────────────────────────────────────────────────────────── */
+  code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12.5px;
+    background: var(--bg2);
+    color: var(--accent);
+    padding: 1px 5px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+  }
+  pre {
+    background: var(--code-bg);
+    color: var(--code-text);
+    border-radius: 10px;
+    padding: 18px 20px;
+    overflow-x: auto;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12.5px;
+    line-height: 1.65;
+    margin: 16px 0;
+    border: 1px solid rgba(255,255,255,.05);
+  }
+  pre code { background: none; color: inherit; padding: 0; border: none; font-size: inherit; }
+  .comment { color: #4A5E7A; }
+  .string  { color: #86EFAC; }
+  .key     { color: #93C5FD; }
+  .val     { color: #FCD34D; }
+
+  /* ── Tables ────────────────────────────────────────────────────────── */
+  .table-wrap { overflow-x: auto; margin: 16px 0; border-radius: 10px; border: 1px solid var(--border); }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th {
+    background: var(--bg2);
+    font-family: 'Sora', sans-serif;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .4px;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding: 10px 14px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  td {
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text2);
+    vertical-align: top;
+    line-height: 1.5;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:nth-child(even) td { background: var(--bg2); }
+  td code { font-size: 11.5px; }
+  td strong { font-size: 13px; }
+
+  /* ── Callouts ──────────────────────────────────────────────────────── */
+  .note, .tip, .warn {
+    border-radius: 8px;
+    padding: 13px 16px;
+    margin: 16px 0;
+    font-size: 13.5px;
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+  }
+  .note { background: var(--note-bg); border: 1px solid var(--note-border); color: var(--text2); }
+  .tip  { background: var(--tip-bg);  border: 1px solid var(--tip-border);  color: var(--text2); }
+  .warn { background: rgba(220,38,38,.07); border: 1px solid rgba(220,38,38,.25); color: var(--text2); }
+  .callout-icon { flex-shrink: 0; font-size: 14px; line-height: 1.5; }
+
+  /* ── Steps ─────────────────────────────────────────────────────────── */
+  .steps { display: flex; flex-direction: column; gap: 0; margin: 16px 0; }
+  .step {
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+    position: relative;
+  }
+  .step:not(:last-child)::before {
+    content: '';
+    position: absolute;
+    left: 14px;
+    top: 32px;
+    bottom: -8px;
+    width: 1px;
+    background: var(--border);
+  }
+  .step-num {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--accent-dim);
+    border: 1.5px solid var(--accent);
+    color: var(--accent);
+    font-family: 'Sora', sans-serif;
+    font-size: 12px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+  .step-body { padding-bottom: 22px; flex: 1; }
+  .step-title { font-weight: 600; color: var(--text); font-size: 14px; margin-bottom: 3px; }
+  .step-desc { font-size: 13.5px; color: var(--text2); }
+
+  /* ── File tree ─────────────────────────────────────────────────────── */
+  .tree {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    background: var(--code-bg);
+    color: var(--code-text);
+    border-radius: 10px;
+    padding: 18px 20px;
+    line-height: 1.9;
+    border: 1px solid rgba(255,255,255,.05);
+    margin: 16px 0;
+    overflow-x: auto;
+  }
+  .tree-dir   { color: #93C5FD; }
+  .tree-file  { color: #CBD5E1; }
+  .tree-note  { color: #4A5E7A; }
+  .tree-key   { color: #FCD34D; }
+
+  /* ── Role pills ────────────────────────────────────────────────────── */
+  .pill {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 20px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .pill-admin { background: rgba(239,68,68,.12); color: #DC2626; border: 1px solid rgba(239,68,68,.25); }
+  .pill-op    { background: rgba(76,123,255,.12); color: var(--accent); border: 1px solid rgba(76,123,255,.25); }
+  .pill-bg    { background: rgba(22,163,74,.1);   color: var(--success); border: 1px solid rgba(22,163,74,.25); }
+
+  /* ── Divider ───────────────────────────────────────────────────────── */
+  hr { border: none; border-top: 1px solid var(--border); margin: 40px 0; }
+
+  /* ── Lists ─────────────────────────────────────────────────────────── */
+  ul, ol { padding-left: 20px; color: var(--text2); margin-bottom: 14px; }
+  li { margin-bottom: 5px; }
+  li:last-child { margin-bottom: 0; }
+
+  /* ── Section heading anchor ─────────────────────────────────────────── */
+  h2 .anchor, h3 .anchor { opacity: 0; font-size: .75em; color: var(--muted); margin-left: 6px; text-decoration: none; transition: opacity .15s; }
+  h2:hover .anchor, h3:hover .anchor { opacity: 1; }
+
+  /* ── Grid ──────────────────────────────────────────────────────────── */
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 16px 0; }
+  @media (max-width: 640px) { .grid-2 { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .card-title { font-family: 'Sora', sans-serif; font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+  .card-body  { font-size: 13px; color: var(--text2); line-height: 1.55; }
+</style>
+
+<div class="sidebar" id="sidebar">
+  <div class="sidebar-brand">
+    <div class="sidebar-brand-name">Onboarding Automation</div>
+    <div class="sidebar-brand-sub">v1.0 · Captivea / Riss Group</div>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-group-label">Introduction</div>
+    <a href="#overview"       class="sidebar-link active">Vue d'ensemble</a>
+    <a href="#architecture"   class="sidebar-link">Architecture</a>
+    <a href="#structure"      class="sidebar-link">Arborescence</a>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-group-label">Installation</div>
+    <a href="#prerequisites"  class="sidebar-link">Prérequis</a>
+    <a href="#local-dev"      class="sidebar-link">Dev local</a>
+    <a href="#env-vars"       class="sidebar-link">Variables d'environnement</a>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-group-label">Fonctionnalités</div>
+    <a href="#onboarding"     class="sidebar-link">Pipeline onboarding</a>
+    <a href="#background"     class="sidebar-link">Traitement background</a>
+    <a href="#offboarding"    class="sidebar-link">Offboarding</a>
+    <a href="#admin"          class="sidebar-link">Configuration admin</a>
+    <a href="#auth"           class="sidebar-link">Auth & rôles</a>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-group-label">Intégrations</div>
+    <a href="#exchange"       class="sidebar-link">Exchange PowerShell</a>
+    <a href="#github"         class="sidebar-link">GitHub</a>
+    <a href="#teams"          class="sidebar-link">Microsoft Teams</a>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-group-label">Déploiement</div>
+    <a href="#cicd"           class="sidebar-link">CI/CD GitHub Actions</a>
+    <a href="#security"       class="sidebar-link">Sécurité</a>
+    <a href="#files"          class="sidebar-link">Fichiers clés</a>
+  </div>
+</div>
+
+<div class="main">
+<div class="content">
+
+  <!-- Hero -->
+  <h1>Onboarding Automation</h1>
+  <p class="lead">Application interne de gestion des arrivées et départs de collaborateurs. Elle automatise la création de comptes Microsoft 365, l'attribution de licences, l'ajout aux groupes SharePoint, Teams, Exchange et GitHub — le tout piloté depuis une interface web sans intervention technique.</p>
+
+  <div class="badges">
+    <span class="badge">Node.js + Express</span>
+    <span class="badge">React + Vite</span>
+    <span class="badge">Microsoft Graph API</span>
+    <span class="badge">Exchange Online PS</span>
+    <span class="badge badge-green">Déployé sur VPS OVH</span>
+    <span class="badge badge-slate">SQLite (sql.js)</span>
+  </div>
+
+  <!-- Overview -->
+  <h2 id="overview">Vue d'ensemble</h2>
+  <p>L'application est utilisée par des opérateurs RH ou IT pour déclencher un onboarding complet en quelques clics. Elle est organisée autour de deux flux principaux :</p>
+
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">Onboarding</div>
+      <div class="card-body">Création du compte Azure AD, assignation d'une licence Microsoft 365, ajout aux groupes configurés (SharePoint, Teams, Exchange, GitHub). Les credentials sont affichés immédiatement après la création du compte.</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Offboarding</div>
+      <div class="card-body">Désactivation du compte AD, révocation des sessions, retrait de tous les groupes, transfert optionnel des emails et des accès OneDrive, retrait de la licence. Déclenchable uniquement par un admin.</div>
+    </div>
+  </div>
+
+  <!-- Architecture -->
+  <h2 id="architecture">Architecture</h2>
+  <p>L'application est un monorepo avec un backend Express et un frontend React compilé statiquement. En production, Nginx sert le frontend buildé et proxifie l'API vers le backend Node.js géré par PM2.</p>
+
+  <pre><code><span class="comment"># Flux de données simplifié</span>
+
+Navigateur
+  └─→ Nginx (:443)
+        ├─→ /api/*  →  PM2: node backend/server.js (:8081)
+        │                    ├─→ Microsoft Graph API (Azure AD)
+        │                    ├─→ pwsh /opt/scripts/exchange.ps1
+        │                    └─→ SQLite (sql.js, fichier .db)
+        └─→ /*      →  dist/ (build Vite, servi statiquement)</code></pre>
+
+  <div class="note"><span class="callout-icon">⚠️</span><div>Le backend utilise <strong>sql.js</strong> (SQLite en mémoire, persisté sur disque via <code>fs.writeFileSync</code>). La base est chargée au démarrage et sauvegardée après chaque écriture. En cas de crash, les données non encore sauvegardées peuvent être perdues — prévoir un backup régulier du fichier <code>.db</code>.</div></div>
+
+  <!-- Structure -->
+  <h2 id="structure">Arborescence du projet</h2>
+  <div class="tree"><span class="tree-dir">onboarding/</span>
+├── <span class="tree-dir">.github/workflows/</span>
+│   └── <span class="tree-file">deploy.yml</span>          <span class="tree-note"># CI/CD GitHub Actions</span>
+├── <span class="tree-dir">backend/</span>
+│   ├── <span class="tree-file">server.js</span>            <span class="tree-note"># Point d'entrée — routes Express, logique onboarding/offboarding</span>
+│   ├── <span class="tree-file">db.js</span>                <span class="tree-note"># Initialisation SQLite, migrations de schéma</span>
+│   ├── <span class="tree-file">reset-admin-password.js</span> <span class="tree-note"># Script utilitaire de récupération</span>
+│   ├── <span class="tree-file">.env</span>                 <span class="tree-note"># ⚠️ Ne jamais commiter — secrets Azure, Exchange, SMTP</span>
+│   ├── <span class="tree-file">.env.example</span>         <span class="tree-note"># Modèle de configuration</span>
+│   └── <span class="tree-dir">lib/</span>
+│       ├── <span class="tree-file">graph.js</span>             <span class="tree-note"># Initialisation ClientSecretCredential Azure</span>
+│       ├── <span class="tree-file">group.js</span>             <span class="tree-note"># listGroups, addMemberToGroup, getGroupById</span>
+│       ├── <span class="tree-file">license.js</span>           <span class="tree-note"># assignLicense, listAvailableLicenses</span>
+│       ├── <span class="tree-file">user.js</span>              <span class="tree-note"># createUser, deleteUser</span>
+│       └── <span class="tree-file">mock.js</span>              <span class="tree-note"># Données fictives pour MOCK_GRAPH=true</span>
+└── <span class="tree-dir">frontend/</span>
+    ├── <span class="tree-file">vite.config.js</span>
+    └── <span class="tree-dir">src/</span>
+        ├── <span class="tree-file">App.jsx</span>              <span class="tree-note"># Routeur React</span>
+        ├── <span class="tree-file">api.js</span>               <span class="tree-note"># fetch() wrapper — cookies inclus, gestion 401</span>
+        ├── <span class="tree-dir">components/</span>
+        │   └── <span class="tree-file">Layout.jsx</span>
+        ├── <span class="tree-dir">context/</span>
+        │   └── <span class="tree-file">UserContext.jsx</span>
+        └── <span class="tree-dir">pages/</span>
+            ├── <span class="tree-file">Login.jsx</span>
+            ├── <span class="tree-file">Dashboard.jsx</span>
+            ├── <span class="tree-file">NewOnboarding.jsx</span>    <span class="tree-note"># Wizard 5 étapes</span>
+            ├── <span class="tree-file">OnboardingDetail.jsx</span> <span class="tree-note"># Vue détail + steps</span>
+            ├── <span class="tree-file">History.jsx</span>
+            ├── <span class="tree-file">Offboarding.jsx</span>      <span class="tree-note"># Admin seulement</span>
+            ├── <span class="tree-file">Admin.jsx</span>            <span class="tree-note"># Configuration no-code (groupes, pays, licences…)</span>
+            ├── <span class="tree-file">AcceptInvite.jsx</span>     <span class="tree-note"># Page d'activation des comptes invités</span>
+            └── <span class="tree-file">Security.jsx</span>         <span class="tree-note"># Logs de sécurité (admin)</span></div>
+
+  <!-- Prerequisites -->
+  <h2 id="prerequisites">Prérequis</h2>
+
+  <h3>Côté serveur (VPS / machine de déploiement)</h3>
+  <ul>
+    <li>Node.js ≥ 20 LTS</li>
+    <li>PM2 (<code>npm i -g pm2</code>)</li>
+    <li>PowerShell 7+ (<code>pwsh</code>) avec le module <code>ExchangeOnlineManagement</code></li>
+    <li>Nginx</li>
+    <li>Git</li>
+  </ul>
+
+  <h3>Côté Azure</h3>
+  <ul>
+    <li>Une <strong>App Registration</strong> Azure AD avec les permissions Microsoft Graph suivantes (Application, pas Delegated) : <code>User.ReadWrite.All</code>, <code>Group.ReadWrite.All</code>, <code>Directory.ReadWrite.All</code>, <code>TeamMember.ReadWrite.All</code></li>
+    <li>Un <strong>client secret</strong> généré pour cette app (ou un certificat)</li>
+    <li>Le <strong>Tenant ID</strong> et <strong>Client ID</strong> de l'app</li>
+  </ul>
+
+  <h3>Pour Exchange Online (distribution lists)</h3>
+  <ul>
+    <li>Un certificat <code>.pfx</code> déposé dans <code>/opt/exchange.pfx</code> (chmod 600)</li>
+    <li>L'App Registration doit avoir le rôle Exchange App Policy via PowerShell (<code>New-ServicePrincipal</code>)</li>
+    <li>Le script <code>/opt/scripts/exchange.ps1</code> (chmod 500)</li>
+  </ul>
+
+  <!-- Local dev -->
+  <h2 id="local-dev">Développement local</h2>
+
+  <pre><code><span class="comment"># 1. Cloner le repo</span>
+git clone https://github.com/captivea-HarchadRAND/Onboarding-Automation-.git
+cd onboarding
+
+<span class="comment"># 2. Configurer le backend</span>
+cd backend
+cp .env.example .env
+<span class="comment"># → Remplir les variables (voir section suivante)</span>
+<span class="comment"># → Pour tester sans Azure : MOCK_GRAPH=true</span>
+npm install
+npm run dev            <span class="comment"># nodemon, port 8081</span>
+
+<span class="comment"># 3. Dans un second terminal, lancer le frontend</span>
+cd frontend
+npm install
+npm run dev            <span class="comment"># Vite, port 5174</span></code></pre>
+
+  <div class="tip"><span class="callout-icon">✅</span><div>Avec <code>MOCK_GRAPH=true</code>, aucun appel Azure n'est effectué. Les groupes et licences sont simulés. Idéal pour développer le frontend ou tester la logique sans credentials.</div></div>
+
+  <p>Pour simuler un échec et tester le rollback :</p>
+  <pre><code>MOCK_FAIL_STEP=2   <span class="comment"># 1=création compte, 2=groupe, 3=licence</span></code></pre>
+
+  <!-- Env vars -->
+  <h2 id="env-vars">Variables d'environnement</h2>
+  <p>Toutes les variables sont dans <code>backend/.env</code>. Ce fichier ne doit jamais être commité ni écrasé par le CI/CD.</p>
+
+  <h3>Mode développement</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Variable</th><th>Défaut</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>MOCK_GRAPH</code></td><td><code>false</code></td><td>Simule tous les appels Azure/Graph avec des données fictives</td></tr>
+        <tr><td><code>MOCK_FAIL_STEP</code></td><td><code>0</code></td><td>Déclenche un échec à l'étape N pour tester le rollback</td></tr>
+        <tr><td><code>MOCK_DELAY_MS</code></td><td><code>1200</code></td><td>Durée simulée de chaque étape en ms</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Azure AD / Microsoft Graph</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Variable</th><th>Requis</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>AZURE_TENANT_ID</code></td><td>✅</td><td>ID du tenant Azure (GUID)</td></tr>
+        <tr><td><code>AZURE_CLIENT_ID</code></td><td>✅</td><td>Client ID de l'App Registration</td></tr>
+        <tr><td><code>AZURE_CLIENT_SECRET</code></td><td>✅</td><td>Secret de l'App Registration</td></tr>
+        <tr><td><code>DEFAULT_DOMAIN</code></td><td>✅</td><td>Domaine email M365 ex: <code>captivea.com</code></td></tr>
+        <tr><td><code>USAGE_LOCATION</code></td><td>✅</td><td>Code ISO pays pour les licences ex: <code>FR</code></td></tr>
+        <tr><td><code>FORCE_CHANGE_PASSWORD</code></td><td></td><td><code>true</code> = l'utilisateur doit changer son mdp à la 1ère connexion</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Serveur</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Variable</th><th>Défaut</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>PORT</code></td><td><code>8081</code></td><td>Port d'écoute du backend Express</td></tr>
+        <tr><td><code>FRONTEND_URL</code></td><td></td><td>URL du frontend (CORS) — ex: <code>https://onboarding.captivea.com</code></td></tr>
+        <tr><td><code>COOKIE_SECURE</code></td><td><code>false</code></td><td>Mettre <code>true</code> en production (HTTPS obligatoire)</td></tr>
+        <tr><td><code>NODE_ENV</code></td><td></td><td><code>production</code> active aussi <code>COOKIE_SECURE</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Compte admin initial</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Variable</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>ADMIN_INITIAL_EMAIL</code></td><td>Email de l'admin créé au premier démarrage (si aucun admin n'existe)</td></tr>
+        <tr><td><code>ADMIN_INITIAL_PASSWORD</code></td><td>Mot de passe initial. <strong>Ces variables ne servent qu'une fois</strong> — modifier en base ensuite via Admin → Utilisateurs</td></tr>
+        <tr><td><code>RECOVERY_ADMIN_EMAIL</code></td><td>Email break-glass (accès admin garanti même si mdp en base perdu)</td></tr>
+        <tr><td><code>RECOVERY_ADMIN_PASSWORD</code></td><td>Mot de passe break-glass — utiliser un mdp fort, garder secret</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>SMTP (2FA et emails de bienvenue)</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Variable</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>SMTP_HOST</code></td><td>Hôte SMTP (défaut: <code>smtp.office365.com</code>)</td></tr>
+        <tr><td><code>SMTP_PORT</code></td><td>Port SMTP (défaut: <code>587</code>)</td></tr>
+        <tr><td><code>SMTP_USER</code></td><td>Compte SMTP (aussi utilisé comme expéditeur si SMTP_FROM absent)</td></tr>
+        <tr><td><code>SMTP_PASS</code></td><td>Mot de passe SMTP</td></tr>
+        <tr><td><code>SMTP_FROM</code></td><td>Adresse expéditeur (optionnel, remplace SMTP_USER)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="note"><span class="callout-icon">⚠️</span><div>Si <code>SMTP_HOST</code> n'est pas configuré, la <strong>2FA est désactivée</strong> et aucun email de bienvenue n'est envoyé. En production, la 2FA est fortement recommandée.</div></div>
+
+  <h3>Exchange Online</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Variable</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>EXCHANGE_APP_ID</code></td><td>Client ID de l'App Registration Exchange (peut être le même qu'Azure)</td></tr>
+        <tr><td><code>EXCHANGE_CERT_PASSWORD</code></td><td>Mot de passe du certificat PFX (<code>/opt/exchange.pfx</code>)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>GitHub</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Variable</th><th>Défaut</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>GITHUB_TOKEN</code></td><td></td><td>Personal Access Token avec scope <code>admin:org</code></td></tr>
+        <tr><td><code>GITHUB_ORG</code></td><td><code>Riss-Group</code></td><td>Slug de l'organisation GitHub</td></tr>
+        <tr><td><code>GITHUB_TEAM_SLUG</code></td><td><code>all</code></td><td>Slug de l'équipe GitHub à laquelle ajouter tous les nouveaux membres</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Onboarding pipeline -->
+  <h2 id="onboarding">Pipeline onboarding</h2>
+  <p>Le pipeline est découpé en deux phases qui tournent de manière asynchrone. L'opérateur reçoit les credentials dès la fin de la <strong>Phase 1</strong>, sans attendre l'intégration complète aux groupes.</p>
+
+  <h3>Phase 1 — Synchrone (compte visible immédiatement)</h3>
+  <div class="steps">
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-body">
+        <div class="step-title">Création du compte Azure AD</div>
+        <div class="step-desc">Appel <code>POST /users</code> via Graph API. Le mot de passe temporaire est généré par Azure et stocké en mémoire dans <code>tempPasswordStore</code>. Le compte AD ID est sauvegardé en base pour le rollback.</div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-body">
+        <div class="step-title">Ajout au groupe principal</div>
+        <div class="step-desc">Ajout au groupe M365 sélectionné par l'opérateur lors du wizard (ex: équipe département). Configurable et désactivable via le schéma dans Admin.</div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <div class="step-body">
+        <div class="step-title">Assignation de la licence Microsoft 365</div>
+        <div class="step-desc">Appel <code>POST /users/{id}/assignLicense</code>. Exchange Online prend 1 à 5 minutes à se provisionner après la création du compte AD — le backend retente automatiquement jusqu'à 5 fois avec délais croissants (<code>15s, 30s, 45s, 60s, 90s</code>) sur les erreurs Exchange-not-ready.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="tip"><span class="callout-icon">✅</span><div>À la fin de la Phase 1, le statut passe à <code>partial</code>. Le frontend arrête son polling et affiche immédiatement les credentials (email + mot de passe temporaire). Le mot de passe n'est renvoyé <strong>qu'une seule fois</strong> — il est supprimé du store en mémoire après la première lecture.</div></div>
+
+  <h3>Phase 2 — Background (60 secondes après Phase 1)</h3>
+  <p>La Phase 2 est lancée avec <code>setTimeout(60 000)</code> pour laisser à Microsoft le temps de provisionner la boîte Exchange avant d'ajouter l'utilisateur aux groupes de messagerie.</p>
+
+  <div class="steps">
+    <div class="step">
+      <div class="step-num">4</div>
+      <div class="step-body">
+        <div class="step-title">Ajout aux groupes SharePoint & Communication</div>
+        <div class="step-desc">Groupes globaux, groupes par pays, groupes par ville, groupes de communication (par département/rôle). Pour les <strong>distribution lists</strong> et shared mailboxes, Exchange PowerShell est utilisé en fallback automatique si Graph API refuse (<code>Add-DistributionGroupMember</code>).</div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">5</div>
+      <div class="step-body">
+        <div class="step-title">Invitation GitHub</div>
+        <div class="step-desc">Si <code>GITHUB_TOKEN</code> est configuré : invitation à l'organisation via <code>POST /orgs/{org}/invitations</code>, puis ajout au team <code>all</code> via <code>PUT /orgs/{org}/teams/{slug}/memberships/{email}</code>.</div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">6</div>
+      <div class="step-body">
+        <div class="step-title">Ajout au canal Microsoft Teams</div>
+        <div class="step-desc">Si un <code>channelId</code> est configuré pour la ville de l'employé : ajout via <code>POST /teams/{teamsId}/channels/{channelId}/members</code>. Le <code>teamsId</code> est le Group Object ID du groupe pays.</div>
+      </div>
+    </div>
+  </div>
+
+  <h3>Rollback automatique</h3>
+  <p>Si la Phase 1 échoue (<strong>avant</strong> que le statut passe à <code>partial</code>), le compte Azure AD est supprimé automatiquement (<code>DELETE /users/{id}</code>). La Phase 2 ne déclenche <strong>jamais</strong> de rollback — les erreurs d'ajout aux groupes sont loguées mais n'affectent pas le compte déjà créé.</p>
+
+  <!-- Background -->
+  <h2 id="background">Traitement background — points d'attention</h2>
+
+  <p>Deux fonctions clés dans <code>server.js</code> :</p>
+  <ul>
+    <li><strong><code>executeOnboarding(id)</code></strong> — Phase 1. Appelée juste après la création de l'enregistrement en base. Si elle échoue avant <code>partial</code>, rollback. Si elle réussit, programme la Phase 2.</li>
+    <li><strong><code>executeOnboardingBackground(id, adUserId, userPrincipalName, step4Enabled)</code></strong> — Phase 2. Tournée 60s plus tard. Toutes les erreurs sont rattrapées et loguées, le statut final passe à <code>done</code> même si des sous-étapes échouent.</li>
+  </ul>
+
+  <div class="warn"><span class="callout-icon">🔴</span><div>Le backend utilise <code>setTimeout</code> pour la Phase 2. <strong>Si PM2 redémarre le process pendant les 60 secondes d'attente</strong>, la Phase 2 ne s'exécutera pas. L'onboarding restera en statut <code>partial</code> indéfiniment. Vérifier les logs PM2 si un onboarding ne passe pas à <code>done</code>.</div></div>
+
+  <!-- Offboarding -->
+  <h2 id="offboarding">Offboarding</h2>
+  <p>Accessible uniquement aux administrateurs. Déclenche les actions suivantes dans l'ordre :</p>
+  <ol>
+    <li>Recherche du compte par email via <code>GET /users/{email}</code></li>
+    <li>Désactivation du compte (<code>accountEnabled: false</code>)</li>
+    <li>Révocation de toutes les sessions actives (<code>revokeSignInSessions</code>)</li>
+    <li>Retrait de tous les groupes M365 auxquels l'utilisateur appartient</li>
+    <li>Transfert optionnel des emails (règle de redirection Outlook)</li>
+    <li>Transfert optionnel des accès OneDrive</li>
+    <li>Retrait de toutes les licences</li>
+  </ol>
+  <div class="note"><span class="callout-icon">⚠️</span><div>L'offboarding génère un script PowerShell téléchargeable pour les actions manuelles complémentaires (ex: retirer d'une distribution list Exchange). Le compte AD n'est <strong>pas supprimé</strong> — il est désactivé et conservé.</div></div>
+
+  <!-- Admin config -->
+  <h2 id="admin">Configuration admin (no-code)</h2>
+  <p>Toute la configuration métier se fait via <strong>Admin → Paramètres</strong>. Les données sont stockées dans la table <code>settings</code> de la base SQLite (clé/valeur JSON).</p>
+
+  <h3>Groupes globaux</h3>
+  <p>Groupes M365 ajoutés à <strong>tous</strong> les nouveaux employés quel que soit leur pays ou département. Champ <code>id</code> = Group Object ID Azure AD.</p>
+
+  <h3>Groupes par pays / ville</h3>
+  <p>Chaque entrée correspond à un pays (ex: France). Elle contient :</p>
+  <ul>
+    <li><code>id</code> — Group Object ID Azure AD <em>et</em> Teams Group ID (même valeur)</li>
+    <li><code>location</code> — code pays utilisé dans le wizard</li>
+    <li><code>cities[]</code> — liste de villes, chacune avec son propre <code>id</code> (Group Object ID) et <code>channelId</code> (Teams Channel ID, optionnel)</li>
+  </ul>
+
+  <h3>Groupes de communication (distribution lists / shared mailboxes)</h3>
+  <p>Groupes assignés par département et/ou localisation. Champ supplémentaire <code>exchangeEmail</code> pour les distribution lists Exchange (ex: <code>sales@captivea.com</code>). Si ce champ est présent, Exchange PowerShell sera utilisé automatiquement en cas d'échec Graph API.</p>
+
+  <h3>Schéma d'onboarding</h3>
+  <p>Chaque étape peut être activée ou désactivée individuellement via Admin → Schéma. Permet de désactiver temporairement une intégration sans modifier le code.</p>
+
+  <!-- Auth -->
+  <h2 id="auth">Authentification & rôles</h2>
+
+  <p>Deux rôles : <span class="pill pill-admin">admin</span> et <span class="pill pill-op">operator</span>.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Action</th><th>Admin</th><th>Operator</th></tr></thead>
+      <tbody>
+        <tr><td>Créer un onboarding</td><td>✅</td><td>✅</td></tr>
+        <tr><td>Voir ses propres onboardings</td><td>✅</td><td>✅</td></tr>
+        <tr><td>Voir tous les onboardings</td><td>✅</td><td>❌</td></tr>
+        <tr><td>Déclencher un offboarding</td><td>✅</td><td>❌</td></tr>
+        <tr><td>Configurer les groupes/licences</td><td>✅</td><td>❌</td></tr>
+        <tr><td>Gérer les utilisateurs</td><td>✅</td><td>❌</td></tr>
+        <tr><td>Consulter les logs de sécurité</td><td>✅</td><td>❌</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Sessions</h3>
+  <p>Cookie <code>httpOnly</code> + <code>sameSite: strict</code> + <code>secure</code> (en production). Durée : 14 jours. Stockées dans la table <code>sessions</code>.</p>
+
+  <h3>2FA</h3>
+  <p>Si SMTP est configuré, un code OTP à 6 chiffres est envoyé par email à chaque connexion. Le code expire après 10 minutes. Limité à 5 tentatives avant blocage.</p>
+
+  <h3>Rate limiting</h3>
+  <p>Toutes les routes d'authentification sont protégées par <code>express-rate-limit</code> : 10 tentatives maximum par fenêtre de 15 minutes.</p>
+
+  <h3>Invitations</h3>
+  <p>Les nouveaux comptes opérateurs sont créés par un admin via Admin → Utilisateurs. Un lien d'invitation avec token UUID est généré — le destinataire définit son propre mot de passe via ce lien.</p>
+
+  <!-- Exchange -->
+  <h2 id="exchange">Exchange Online PowerShell</h2>
+  <p>Utilisé pour ajouter des utilisateurs aux <strong>distribution lists</strong> et configurer les <strong>shared mailboxes</strong> (opérations refusées par Graph API).</p>
+
+  <h3>Installation sur le VPS</h3>
+  <pre><code><span class="comment"># Installer le module Exchange Online</span>
+pwsh -Command "Install-Module ExchangeOnlineManagement -Force -Scope AllUsers"
+
+<span class="comment"># Déposer le certificat</span>
+cp exchange.pfx /opt/exchange.pfx
+chmod 600 /opt/exchange.pfx
+
+<span class="comment"># Déposer le script</span>
+cp exchange.ps1 /opt/scripts/exchange.ps1
+chmod 500 /opt/scripts/exchange.ps1</code></pre>
+
+  <h3>Actions disponibles</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Action</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>AddDistributionMember</code></td><td>Ajoute un utilisateur à une distribution list via <code>Add-DistributionGroupMember</code>. <code>Identity</code> = email de la liste (ex: <code>sales@captivea.com</code>)</td></tr>
+        <tr><td><code>SetSharedMailbox</code></td><td>Configure une shared mailbox</td></tr>
+        <tr><td><code>AddMailboxPermission</code></td><td>Accorde des permissions sur une boîte partagée</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="note"><span class="callout-icon">⚠️</span><div>Toutes les valeurs passées à <code>runExchangeScript()</code> sont validées (whitelist d'actions, regex email/GUID). Le processus est lancé via <code>spawn()</code> avec un tableau d'arguments — pas de shell string — ce qui rend toute injection de commande impossible.</div></div>
+
+  <!-- GitHub -->
+  <h2 id="github">GitHub</h2>
+  <p>Si <code>GITHUB_TOKEN</code> est défini dans <code>.env</code>, chaque onboarding invite automatiquement l'employé dans l'organisation GitHub et l'ajoute au team <code>all</code>.</p>
+
+  <div class="note"><span class="callout-icon">⚠️</span><div>L'invitation GitHub est envoyée à l'adresse email M365 du nouvel employé. Si la boîte Exchange n'est pas encore provisionnée, l'email d'invitation peut ne pas être reçu immédiatement — c'est pour cette raison que la Phase 2 attend 60 secondes après l'assignation de la licence.</div></div>
+
+  <p>Le token GitHub doit avoir le scope <code>admin:org</code>. Pour le consulter ou le régénérer : <strong>GitHub → Settings → Developer settings → Personal access tokens</strong>.</p>
+
+  <!-- Teams -->
+  <h2 id="teams">Microsoft Teams</h2>
+  <p>L'ajout au canal Teams est conditionnel : il ne se produit que si un <code>channelId</code> est configuré pour la ville de l'employé dans Admin → Groupes par pays.</p>
+
+  <h3>Comment récupérer les IDs</h3>
+  <pre><code><span class="comment"># Depuis une URL Teams :</span>
+https://teams.microsoft.com/l/channel/<span class="string">{channelId}</span>/...?groupId=<span class="string">{teamsGroupId}</span>
+
+<span class="comment"># teamsGroupId == Group Object ID du groupe pays (même valeur que le champ "id")</span>
+<span class="comment"># channelId = la portion encodée après /channel/ dans l'URL</span></code></pre>
+
+  <!-- CI/CD -->
+  <h2 id="cicd">CI/CD — GitHub Actions</h2>
+  <p>À chaque push sur <code>main</code>, le workflow <code>.github/workflows/deploy.yml</code> déploie automatiquement sur le VPS via SSH.</p>
+
+  <pre><code><span class="comment"># Ce qui s'exécute sur le VPS à chaque deploy</span>
+cd /var/www/onboarding
+git pull origin main
+cd frontend && npm install && npm run build   <span class="comment"># rebuild obligatoire</span>
+cd ../backend && npm install --production
+pm2 restart onboarding</code></pre>
+
+  <div class="warn"><span class="callout-icon">🔴</span><div><strong>Le fichier <code>backend/.env</code> n'est jamais touché par le CI/CD.</strong> Il vit uniquement sur le VPS. Ne jamais le commiter dans le repo. Ne jamais l'ajouter aux secrets GitHub pour l'envoyer automatiquement.</div></div>
+
+  <h3>Secret GitHub requis</h3>
+  <p>Dans GitHub → Settings → Secrets → Actions, ajouter : <code>SSH_PRIVATE_KEY</code> (clé privée SSH pour accéder au VPS, port 2215).</p>
+
+  <h3>Configuration serveur</h3>
+  <ul>
+    <li>SSH sur le port <strong>2215</strong> (pas le port standard 22)</li>
+    <li>fail2ban configuré sur le port 2215 — max 3 tentatives / 5 min, ban 30 min</li>
+    <li>UFW : seuls les ports 80, 443, 2215 sont ouverts</li>
+  </ul>
+
+  <!-- Security -->
+  <h2 id="security">Sécurité — points clés</h2>
+
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">Pas de secrets dans le code</div>
+      <div class="card-body">Toutes les clés (Azure, Exchange, GitHub, SMTP) sont dans <code>.env</code> uniquement. Le frontend ne contient aucun secret.</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Contrôle d'accès serveur</div>
+      <div class="card-body">Chaque route API est protégée par <code>auth</code> et/ou <code>requireRole('admin')</code>. Un opérateur ne peut accéder qu'à ses propres onboardings.</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Anti-injection</div>
+      <div class="card-body">Requêtes SQL paramétrées, OData filtré par whitelist de caractères, Exchange via <code>spawn()</code> avec tableau d'args, escapeHtml() dans les emails.</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Mot de passe temporaire</div>
+      <div class="card-body">Jamais stocké en base. En mémoire uniquement (<code>tempPasswordStore</code>), retourné une seule fois via l'API, détruit immédiatement après lecture. Expire au bout de 10 minutes.</div>
+    </div>
+  </div>
+
+  <!-- Key files -->
+  <h2 id="files">Référence des fichiers clés</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Fichier</th><th>Rôle</th></tr></thead>
+      <tbody>
+        <tr><td><code>backend/server.js</code></td><td>Toute la logique métier — routes Express, <code>executeOnboarding()</code>, <code>executeOnboardingBackground()</code>, offboarding, auth, Exchange PowerShell, logs</td></tr>
+        <tr><td><code>backend/db.js</code></td><td>Initialisation de la base SQLite, schéma des tables, migrations automatiques au démarrage</td></tr>
+        <tr><td><code>backend/lib/graph.js</code></td><td>Initialisation de <code>ClientSecretCredential</code> Azure — importé par tous les modules qui appellent Graph</td></tr>
+        <tr><td><code>backend/lib/group.js</code></td><td><code>listGroups</code> (avec filtrage OData sécurisé), <code>addMemberToGroup</code>, <code>getGroupById</code></td></tr>
+        <tr><td><code>backend/lib/user.js</code></td><td><code>createUser</code>, <code>deleteUser</code></td></tr>
+        <tr><td><code>backend/lib/license.js</code></td><td><code>assignLicense</code>, <code>listAvailableLicenses</code></td></tr>
+        <tr><td><code>backend/lib/mock.js</code></td><td>Remplaçants de toutes les fonctions Graph quand <code>MOCK_GRAPH=true</code></td></tr>
+        <tr><td><code>frontend/src/pages/Admin.jsx</code></td><td>Interface de configuration no-code — groupes globaux, pays, communication, schéma, utilisateurs</td></tr>
+        <tr><td><code>frontend/src/pages/NewOnboarding.jsx</code></td><td>Wizard 5 étapes + polling du statut + affichage des credentials</td></tr>
+        <tr><td><code>frontend/src/api.js</code></td><td>Wrapper <code>fetch</code> — cookies inclus automatiquement, redirection vers login sur 401</td></tr>
+        <tr><td><code>.github/workflows/deploy.yml</code></td><td>Pipeline CI/CD — SSH vers VPS, git pull, build frontend, restart PM2</td></tr>
+        <tr><td><code>backend/reset-admin-password.js</code></td><td>Script de récupération d'urgence à lancer directement sur le serveur si l'accès admin est perdu</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <hr>
+  <p style="font-size:12.5px; color: var(--muted); font-family: 'JetBrains Mono', monospace;">Documentation générée le 21 août 2026 · Captivea / Riss Group</p>
+
+</div>
+</div>
+
+<script>
+  // Active sidebar link on scroll
+  const links = document.querySelectorAll('.sidebar-link');
+  const sections = [...links].map(l => {
+    const id = l.getAttribute('href').slice(1);
+    return document.getElementById(id);
+  }).filter(Boolean);
+
+  const obs = new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        links.forEach(l => l.classList.remove('active'));
+        const active = [...links].find(l => l.getAttribute('href') === '#' + e.target.id);
+        if (active) active.classList.add('active');
+      }
+    });
+  }, { rootMargin: '-20% 0px -75% 0px' });
+
+  sections.forEach(s => obs.observe(s));
+</script>
