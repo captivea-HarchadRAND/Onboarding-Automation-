@@ -852,7 +852,7 @@ async function executeOnboarding(id) {
 
 // ─── Manual onboarding (compte M365 existant) ────────────────────────────────
 
-app.post('/api/onboardings/manual', auth, async (req, res) => {
+app.post('/api/onboardings/manual', auth, requireRole('admin'), async (req, res) => {
   const { email, groupId, groupName } = req.body;
 
   if (!isValidEmail(email?.trim()))
@@ -863,6 +863,31 @@ app.post('/api/onboardings/manual', auth, async (req, res) => {
   const idOk = (v) => isValidUUID(v) || (MOCK_GRAPH && /^mock-[\w-]+$/.test(v));
   if (!idOk(groupId))
     return res.status(400).json({ error: 'Identifiant de groupe invalide' });
+
+  // Anti-escalade de privilèges : mêmes règles que POST /api/onboardings — empêche un
+  // operator d'ajouter un compte à un groupe arbitraire (ex. un groupe à privilèges) via
+  // un groupId forgé. Ignoré en mode mock (données fictives).
+  if (!MOCK_GRAPH) {
+    try {
+      const cfgDb = await getDB();
+      const configuredIds = new Set();
+      for (const k of ['pointage_assignments', 'sharepoint_global_groups', 'sharepoint_country_groups']) {
+        const raw = dbRow(cfgDb, `SELECT value FROM settings WHERE key=?`, [k])?.value;
+        if (raw) { try { JSON.parse(raw).forEach(g => g && g.id && configuredIds.add(g.id)); } catch (_) {} }
+      }
+      if (!configuredIds.has(groupId)) {
+        const grp = await getGroupById(groupId);
+        const okSecurity   = grp && grp.securityEnabled === true && grp.mailEnabled === false;
+        const okConvention = grp && /^(2024_)?\s*SP\b/i.test(grp.displayName || '');
+        if (!okSecurity || !okConvention)
+          return res.status(400).json({ error: 'Groupe non autorisé (groupe de provisioning « SP - … » requis)' });
+      }
+    } catch (e) {
+      if (e.graphStatus === 404) return res.status(400).json({ error: 'Groupe introuvable dans l\'organisation' });
+      console.error('[manual] validation Graph:', e.message);
+      return res.status(502).json({ error: 'Validation impossible (Microsoft Graph indisponible)' });
+    }
+  }
 
   const { graphFetch } = require('./lib/graph');
 
