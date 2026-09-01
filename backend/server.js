@@ -549,6 +549,76 @@ function updateStep(db, onboardingId, stepNumber, status, errorMessage = null) {
   saveDB();
 }
 
+// Calcule les groupes SharePoint globaux/pays/ville + communication applicables à un
+// employé (poste/localisation/ville), en excluant le groupe de sécurité principal.
+async function resolveSharePointCommGroups(db, { location, jobRole, city, excludeGroupId }) {
+  const globalGroups        = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='sharepoint_global_groups'`)?.value  || '[]');
+  const countryGroups       = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='sharepoint_country_groups'`)?.value || '[]');
+  const deptAssignments     = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='department_assignments'`)?.value     || '[]');
+  const pointageCommAssign  = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='pointage_comm_assignments'`)?.value  || '[]');
+  const cityGroups = countryGroups
+    .filter(g => g.location === location)
+    .flatMap(g => g.cities || [])
+    .filter(c => c.id && c.name === city)
+    .map(c => ({ id: c.id, label: c.name }));
+  const commGroups = [
+    ...deptAssignments.filter(g => {
+      const depts = g.departments || [];
+      return g.id &&
+        (depts.length === 0 || depts.includes(jobRole)) &&
+        (g.location === 'ALL' || (g.countries || []).includes(location));
+    }).map(g => ({ id: g.id, label: g.name || g.id, exchangeEmail: g.exchangeEmail })),
+    ...pointageCommAssign.filter(g =>
+      g.id && g.department === jobRole && g.location === location
+    ).map(g => ({ id: g.id, label: g.label || g.id })),
+  ].filter((g, i, arr) => arr.findIndex(x => x.id === g.id) === i);
+
+  return [
+    ...globalGroups.filter(g => g.id),
+    ...countryGroups.filter(g => g.id && g.location === location),
+    ...cityGroups,
+    ...commGroups,
+  ]
+    .filter(g => g.id && g.id !== excludeGroupId)
+    .filter((g, i, arr) => arr.findIndex(x => x.id === g.id) === i);
+}
+
+// Ajoute l'utilisateur à chaque groupe SharePoint/communication résolu, avec fallback
+// Exchange PowerShell si Graph refuse (listes mail-enabled/distribution). `logPrefix` est
+// préfixé à chaque ligne de log pour distinguer l'appelant (onboarding auto vs manuel).
+async function applySharePointCommGroups(spGroups, adUserId, userPrincipalName, logPrefix) {
+  let bgToken = null;
+  try { bgToken = await getOffboardToken(); } catch (_) {}
+
+  if (spGroups.length === 0) {
+    logAction(`${logPrefix} Aucun groupe SharePoint configuré — étape ignorée`);
+    return;
+  }
+  for (const g of spGroups) {
+    try {
+      await addMemberToGroup(g.id, adUserId);
+      logAction(`${logPrefix} ✅ Ajouté au groupe "${g.label}"`);
+      if (bgToken) {
+        try {
+          await graphOp(bgToken, 'PATCH', `/groups/${encodeURIComponent(g.id)}`, { autoSubscribeNewMembers: true });
+        } catch (_) { /* non bloquant */ }
+      }
+    } catch (e) {
+      if (/mail-enabled security/i.test(e.message) || /distribution list/i.test(e.message) || /Cannot Update/i.test(e.message)) {
+        logAction(`${logPrefix} ⚠️ Graph API refusé pour "${g.label}" — tentative via Exchange PowerShell…`);
+        try {
+          await runExchangeScript({ Action: 'AddDistributionMember', Identity: g.exchangeEmail || g.id, Member: userPrincipalName });
+          logAction(`${logPrefix} ✅ Ajouté via Exchange PowerShell au groupe "${g.label}"`);
+        } catch (psErr) {
+          logAction(`${logPrefix} ❌ Exchange PowerShell échoué pour "${g.label}" : ${psErr.message}`);
+        }
+      } else {
+        logAction(`${logPrefix} ❌ Groupe "${g.label}" : ${e.message}`);
+      }
+    }
+  }
+}
+
 async function executeOnboardingBackground(id, adUserId, userPrincipalName, step4Enabled) {
   const db = await getDB();
   const onb = dbRow(db, `SELECT * FROM onboardings WHERE id=?`, [id]);
@@ -556,72 +626,16 @@ async function executeOnboardingBackground(id, adUserId, userPrincipalName, step
 
   logAction(`[${id}] [BG] Démarrage de l'intégration groupes/Teams/GitHub pour ${onb.employee_email}`);
 
-  let bgToken = null;
-  try { bgToken = await getOffboardToken(); } catch (_) {}
-
   // Étape 4 — Groupes SharePoint & Communication
   if (step4Enabled) {
     updateStep(db, id, 4, 'running');
-    const globalGroups        = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='sharepoint_global_groups'`)?.value  || '[]');
-    const countryGroups       = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='sharepoint_country_groups'`)?.value || '[]');
-    const deptAssignments     = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='department_assignments'`)?.value     || '[]');
-    const pointageCommAssign  = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='pointage_comm_assignments'`)?.value  || '[]');
-    const location            = onb.location || '';
-    const jobRole             = onb.job_role || '';
-    const city                = onb.city || '';
-    const cityGroups = countryGroups
-      .filter(g => g.location === location)
-      .flatMap(g => g.cities || [])
-      .filter(c => c.id && c.name === city)
-      .map(c => ({ id: c.id, label: c.name }));
-    const commGroups = [
-      ...deptAssignments.filter(g => {
-        const depts = g.departments || [];
-        return g.id &&
-          (depts.length === 0 || depts.includes(jobRole)) &&
-          (g.location === 'ALL' || (g.countries || []).includes(location));
-      }).map(g => ({ id: g.id, label: g.name || g.id, exchangeEmail: g.exchangeEmail })),
-      ...pointageCommAssign.filter(g =>
-        g.id && g.department === jobRole && g.location === location
-      ).map(g => ({ id: g.id, label: g.label || g.id })),
-    ].filter((g, i, arr) => arr.findIndex(x => x.id === g.id) === i);
-
-    const spGroups = [
-      ...globalGroups.filter(g => g.id),
-      ...countryGroups.filter(g => g.id && g.location === location),
-      ...cityGroups,
-      ...commGroups,
-    ]
-      .filter(g => g.id && g.id !== onb.group_id)
-      .filter((g, i, arr) => arr.findIndex(x => x.id === g.id) === i);
-
-    if (spGroups.length === 0) {
-      logAction(`[${id}] [BG] Aucun groupe SharePoint configuré — étape ignorée`);
-    } else {
-      for (const g of spGroups) {
-        try {
-          await addMemberToGroup(g.id, adUserId);
-          logAction(`[${id}] [BG] ✅ Ajouté au groupe "${g.label}"`);
-          if (bgToken) {
-            try {
-              await graphOp(bgToken, 'PATCH', `/groups/${encodeURIComponent(g.id)}`, { autoSubscribeNewMembers: true });
-            } catch (_) { /* non bloquant */ }
-          }
-        } catch (e) {
-          if (/mail-enabled security/i.test(e.message) || /distribution list/i.test(e.message) || /Cannot Update/i.test(e.message)) {
-            logAction(`[${id}] [BG] ⚠️ Graph API refusé pour "${g.label}" — tentative via Exchange PowerShell…`);
-            try {
-              await runExchangeScript({ Action: 'AddDistributionMember', Identity: g.exchangeEmail || g.id, Member: userPrincipalName });
-              logAction(`[${id}] [BG] ✅ Ajouté via Exchange PowerShell au groupe "${g.label}"`);
-            } catch (psErr) {
-              logAction(`[${id}] [BG] ❌ Exchange PowerShell échoué pour "${g.label}" : ${psErr.message}`);
-            }
-          } else {
-            logAction(`[${id}] [BG] ❌ Groupe "${g.label}" : ${e.message}`);
-          }
-        }
-      }
-    }
+    const spGroups = await resolveSharePointCommGroups(db, {
+      location: onb.location || '',
+      jobRole: onb.job_role || '',
+      city: onb.city || '',
+      excludeGroupId: onb.group_id,
+    });
+    await applySharePointCommGroups(spGroups, adUserId, userPrincipalName, `[${id}] [BG]`);
     updateStep(db, id, 4, 'done');
     saveDB();
   } else {
@@ -853,13 +867,15 @@ async function executeOnboarding(id) {
 // ─── Manual onboarding (compte M365 existant) ────────────────────────────────
 
 app.post('/api/onboardings/manual', auth, requireRole('admin'), async (req, res) => {
-  const { email, groupId, groupName } = req.body;
+  const { email, groupId, groupName, jobRole, location, city } = req.body;
 
   if (!isValidEmail(email?.trim()))
     return res.status(400).json({ error: 'Email invalide' });
   const tooLong = (s, n) => typeof s === 'string' && s.length > n;
   if (tooLong(groupName, 256))
     return res.status(400).json({ error: 'Nom de groupe trop long' });
+  if (tooLong(jobRole, 128) || tooLong(location, 64) || tooLong(city, 128))
+    return res.status(400).json({ error: 'Champ trop long' });
   const idOk = (v) => isValidUUID(v) || (MOCK_GRAPH && /^mock-[\w-]+$/.test(v));
   if (!idOk(groupId))
     return res.status(400).json({ error: 'Identifiant de groupe invalide' });
@@ -919,7 +935,25 @@ app.post('/api/onboardings/manual', auth, requireRole('admin'), async (req, res)
     }
   }
 
-  // 3. GitHub invitation
+  // 3. Groupes SharePoint & Communication (mêmes règles que l'étape 4 du flow automatique)
+  let spGroupCount = 0;
+  if (jobRole?.trim()) {
+    try {
+      const cfgDb = await getDB();
+      const spGroups = await resolveSharePointCommGroups(cfgDb, {
+        location: location?.trim() || '',
+        jobRole: jobRole.trim(),
+        city: city?.trim() || '',
+        excludeGroupId: groupId,
+      });
+      spGroupCount = spGroups.length;
+      await applySharePointCommGroups(spGroups, adUser.id, email.trim(), '[manual]');
+    } catch (e) {
+      logAction(`[manual] ❌ Groupes SharePoint/communication : ${e.message}`);
+    }
+  }
+
+  // 4. GitHub invitation
   let githubInvited = false;
   const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
   const GITHUB_ORG   = process.env.GITHUB_ORG || 'Riss-Group';
@@ -964,7 +998,7 @@ app.post('/api/onboardings/manual', auth, requireRole('admin'), async (req, res)
     }
   }
 
-  return res.json({ ok: true, skipped, githubInvited, displayName: adUser.displayName, groupName });
+  return res.json({ ok: true, skipped, githubInvited, spGroupCount, displayName: adUser.displayName, groupName });
 });
 
 // ─── Onboarding routes ────────────────────────────────────────────────────────

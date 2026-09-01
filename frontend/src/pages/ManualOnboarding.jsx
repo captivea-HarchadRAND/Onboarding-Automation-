@@ -118,8 +118,9 @@ function LocationCombobox({ value, onChange, locations = [] }) {
 }
 
 export default function ManualOnboarding() {
-  const [form, setForm] = useState({ email: '', jobRole: '', location: '' });
+  const [form, setForm] = useState({ email: '', jobRole: '', location: '', city: '' });
   const [locations, setLocations] = useState(DEFAULT_LOCATIONS);
+  const [spCountryGroups, setSpCountryGroups] = useState([]);
   const [autoGroup, setAutoGroup] = useState(null);
   const [groupLoading, setGroupLoading] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -129,8 +130,14 @@ export default function ManualOnboarding() {
   useEffect(() => {
     api.get('/api/admin/settings').then(data => {
       if (Array.isArray(data.locations) && data.locations.length > 0) setLocations(data.locations);
+      setSpCountryGroups((data.sharepoint_country_groups || []).filter(g => g.id));
     }).catch(() => {});
   }, []);
+
+  const citiesForLocation = spCountryGroups
+    .filter(g => g.location === form.location)
+    .flatMap(g => g.cities || [])
+    .filter(c => c && c.name && c.id);
 
   useEffect(() => {
     const { jobRole, location } = form;
@@ -161,11 +168,12 @@ export default function ManualOnboarding() {
     setError('');
     setResult(null);
 
-    const { email, jobRole, location } = form;
+    const { email, jobRole, location, city } = form;
     if (!email.trim()) return setError('Email requis');
     if (!jobRole.trim()) return setError('Rôle requis');
     const isGlobal = GLOBAL_ROLES.has(jobRole.trim());
     if (!isGlobal && !location.trim()) return setError('Localisation requise');
+    if (!isGlobal && citiesForLocation.length > 0 && !city.trim()) return setError('Ville requise pour cette localisation');
     if (!autoGroup) return setError('Aucun groupe trouvé pour ce rôle et cette localisation');
 
     setLoading(true);
@@ -174,6 +182,9 @@ export default function ManualOnboarding() {
         email: email.trim(),
         groupId: autoGroup.id,
         groupName: autoGroup.displayName,
+        jobRole: jobRole.trim(),
+        location: isGlobal ? '' : location.trim(),
+        city: isGlobal ? '' : city.trim(),
       });
       setResult(data);
     } catch (err) {
@@ -184,7 +195,7 @@ export default function ManualOnboarding() {
   }
 
   function reset() {
-    setForm({ email: '', jobRole: '', location: '' });
+    setForm({ email: '', jobRole: '', location: '', city: '' });
     setAutoGroup(null);
     setResult(null);
     setError('');
@@ -211,9 +222,14 @@ export default function ManualOnboarding() {
           <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 4 }}>
             {result.skipped ? 'est déjà membre de' : 'a été ajouté au groupe'}
           </p>
-          <p style={{ fontSize: 13, color: 'var(--primary)', fontWeight: 600, marginBottom: 20 }}>
+          <p style={{ fontSize: 13, color: 'var(--primary)', fontWeight: 600, marginBottom: result.spGroupCount ? 8 : 20 }}>
             {result.groupName}
           </p>
+          {result.spGroupCount > 0 && (
+            <p style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 20 }}>
+              + {result.spGroupCount} groupe{result.spGroupCount > 1 ? 's' : ''} SharePoint/communication
+            </p>
+          )}
           {result.githubInvited && (
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: 7, background: 'rgba(99,102,241,.08)', border: '1px solid rgba(99,102,241,.2)', borderRadius: 8, padding: '6px 12px', marginBottom: 16, fontSize: 12, color: 'var(--primary)' }}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
@@ -280,12 +296,25 @@ export default function ManualOnboarding() {
                 <label>Localisation *</label>
                 <LocationCombobox
                   value={form.location}
-                  onChange={v => setForm(f => ({ ...f, location: v }))}
+                  onChange={v => setForm(f => ({ ...f, location: v, city: '' }))}
                   locations={locations}
                 />
               </div>
             )}
           </div>
+
+          {!isGlobal && citiesForLocation.length > 0 && (
+            <div className="form-group" style={{ marginTop: 12 }}>
+              <label>Ville *</label>
+              <select
+                value={form.city}
+                onChange={e => setForm(f => ({ ...f, city: e.target.value }))}
+              >
+                <option value="">Sélectionner…</option>
+                {citiesForLocation.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+              </select>
+            </div>
+          )}
 
           {groupLoading && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, fontSize: 13, color: 'var(--muted)' }}>
@@ -310,8 +339,8 @@ export default function ManualOnboarding() {
         </div>
 
         <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-          <button type="submit" disabled={loading || !autoGroup}
-            style={{ padding: '10px 24px', borderRadius: 8, background: loading || !autoGroup ? 'var(--surface2)' : 'var(--primary)', color: loading || !autoGroup ? 'var(--muted)' : '#fff', border: 'none', cursor: loading || !autoGroup ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <button type="submit" disabled={loading || !autoGroup || (!isGlobal && citiesForLocation.length > 0 && !form.city)}
+            style={{ padding: '10px 24px', borderRadius: 8, background: (loading || !autoGroup) ? 'var(--surface2)' : 'var(--primary)', color: (loading || !autoGroup) ? 'var(--muted)' : '#fff', border: 'none', cursor: (loading || !autoGroup) ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
             {loading && <span className="spinner" style={{ width: 14, height: 14, borderColor: 'rgba(255,255,255,.3)', borderTopColor: '#fff' }} />}
             {loading ? 'Ajout en cours…' : 'Ajouter au groupe + GitHub'}
           </button>
