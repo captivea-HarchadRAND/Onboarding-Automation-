@@ -935,22 +935,22 @@ app.post('/api/onboardings/manual', auth, requireRole('admin'), async (req, res)
     }
   }
 
-  // 3. Groupes SharePoint & Communication (mêmes règles que l'étape 4 du flow automatique)
+  // 3. Groupes SharePoint & Communication (mêmes règles que l'étape 4 du flow automatique).
+  // Toujours exécuté — les groupes globaux (et, si un pays est fourni, les groupes pays/ville)
+  // doivent être ajoutés systématiquement, indépendamment du poste.
   let spGroupCount = 0;
-  if (jobRole?.trim()) {
-    try {
-      const cfgDb = await getDB();
-      const spGroups = await resolveSharePointCommGroups(cfgDb, {
-        location: location?.trim() || '',
-        jobRole: jobRole.trim(),
-        city: city?.trim() || '',
-        excludeGroupId: groupId,
-      });
-      spGroupCount = spGroups.length;
-      await applySharePointCommGroups(spGroups, adUser.id, email.trim(), '[manual]');
-    } catch (e) {
-      logAction(`[manual] ❌ Groupes SharePoint/communication : ${e.message}`);
-    }
+  try {
+    const cfgDb = await getDB();
+    const spGroups = await resolveSharePointCommGroups(cfgDb, {
+      location: location?.trim() || '',
+      jobRole: jobRole?.trim() || '',
+      city: city?.trim() || '',
+      excludeGroupId: groupId,
+    });
+    spGroupCount = spGroups.length;
+    await applySharePointCommGroups(spGroups, adUser.id, email.trim(), '[manual]');
+  } catch (e) {
+    logAction(`[manual] ❌ Groupes SharePoint/communication : ${e.message}`);
   }
 
   // 4. GitHub invitation
