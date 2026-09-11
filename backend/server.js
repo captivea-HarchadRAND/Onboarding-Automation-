@@ -332,13 +332,29 @@ function countActiveAdmins(db, exceptId = null) {
 
 // ─── Auth routes ──────────────────────────────────────────────────────────────
 
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Trop de tentatives. Réessayez dans 15 minutes.' },
-});
+// Un seul rate-limiter partagé par IP entre login/2FA/invite/mot de passe de lancement avait
+// un effet de bord grave : le LAUNCH_PASSWORD est un secret PARTAGÉ entre tous les opérateurs
+// IT, donc plusieurs personnes au bureau passent par la même IP publique (NAT). Une seule
+// personne qui se trompe plusieurs fois en tapant ce mot de passe épuisait le quota partagé
+// de l'IP et bloquait la connexion/2FA de TOUT LE MONDE derrière cette IP pendant 15 min.
+// Chaque action a maintenant son propre compteur, et les actions déjà authentifiées sont
+// limitées par utilisateur (req.user.id) plutôt que par IP.
+function makeLimiter(max, extra = {}) {
+  return rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Trop de tentatives. Réessayez dans 15 minutes.' },
+    ...extra,
+  });
+}
+
+const authLimiter          = makeLimiter(10); // login (pré-auth, par IP — inchangé)
+const twoFaLimiter         = makeLimiter(10); // vérification 2FA (pré-auth, par IP)
+const inviteLimiter        = makeLimiter(10); // acceptation d'invitation (pré-auth, par IP)
+const verifyPasswordLimiter = makeLimiter(10, { keyGenerator: (req) => req.user.id }); // par utilisateur
+const launchPasswordLimiter = makeLimiter(10, { keyGenerator: (req) => req.user.id }); // par utilisateur
 
 app.post('/api/auth/login', authLimiter, async (req, res) => {
   const { email, password } = req.body;
@@ -414,7 +430,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
   res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role } });
 });
 
-app.post('/api/auth/verify-2fa', authLimiter, async (req, res) => {
+app.post('/api/auth/verify-2fa', twoFaLimiter, async (req, res) => {
   const { email, code } = req.body;
   if (!email || !code) return res.status(400).json({ error: 'Email et code requis' });
   const key = normalizeEmail(email);
@@ -454,7 +470,7 @@ app.get('/api/auth/me', auth, async (req, res) => {
   res.json({ user: req.user, mock: MOCK_GRAPH, isSuperAdmin: isSuperAdmin(req.user) });
 });
 
-app.post('/api/auth/verify-password', auth, authLimiter, async (req, res) => {
+app.post('/api/auth/verify-password', auth, verifyPasswordLimiter, async (req, res) => {
   const { password } = req.body;
   if (!password) return res.status(400).json({ error: 'Mot de passe requis' });
   const db = await getDB();
@@ -466,7 +482,7 @@ app.post('/api/auth/verify-password', auth, authLimiter, async (req, res) => {
 });
 
 // Vérification du mot de passe de lancement IT (uniquement via .env — non modifiable via UI)
-app.post('/api/auth/verify-launch-password', auth, authLimiter, async (req, res) => {
+app.post('/api/auth/verify-launch-password', auth, launchPasswordLimiter, async (req, res) => {
   const { password } = req.body;
   if (!password) return res.status(400).json({ error: 'Mot de passe requis' });
   const launchPassword = process.env.LAUNCH_PASSWORD;
@@ -478,7 +494,7 @@ app.post('/api/auth/verify-launch-password', auth, authLimiter, async (req, res)
   res.json({ ok: true });
 });
 
-app.get('/api/auth/invite/:token', authLimiter, async (req, res) => {
+app.get('/api/auth/invite/:token', inviteLimiter, async (req, res) => {
   if (!isValidUUID(req.params.token)) return res.status(404).json({ error: 'Invitation invalide ou expirée' });
   const db = await getDB();
   const user = dbRow(db,
@@ -488,7 +504,7 @@ app.get('/api/auth/invite/:token', authLimiter, async (req, res) => {
   res.json({ user });
 });
 
-app.post('/api/auth/invite/:token', authLimiter, async (req, res) => {
+app.post('/api/auth/invite/:token', inviteLimiter, async (req, res) => {
   if (!isValidUUID(req.params.token)) return res.status(404).json({ error: 'Invitation invalide ou expirée' });
   const { password } = req.body;
   const pwErr = validatePassword(password);
