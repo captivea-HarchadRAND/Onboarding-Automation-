@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api';
+import { useUser } from '../context/UserContext';
 
 function Icon({ path, size = 14, strokeWidth = 1.75 }) {
   return (
@@ -25,6 +26,7 @@ const IC = {
   refresh:  'M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15',
   warn:     ['M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z', 'M12 9v4', 'M12 17h.01'],
   rewind:   ['M1 4v6h6', 'M3.51 15a9 9 0 1 0 .49-3.51'],
+  trash:    ['M3 6h18', 'M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2', 'M10 11v6', 'M14 11v6'],
 };
 
 const STATUS_CFG = {
@@ -60,6 +62,7 @@ function Btn({ onClick, disabled, children, variant = 'ghost', style }) {
   const variants = {
     ghost:   { base: 'transparent',        hover: 'var(--surface2)', color: 'var(--muted)', border: 'var(--border)' },
     primary: { base: 'var(--primary)',      hover: 'var(--primary-hover)', color: '#fff', border: 'transparent' },
+    danger:  { base: '#ef4444',             hover: '#dc2626', color: '#fff', border: '#ef4444' },
   };
   const v = variants[variant];
   return (
@@ -87,11 +90,35 @@ function Btn({ onClick, disabled, children, variant = 'ghost', style }) {
 }
 
 export default function History() {
+  const { isSuperAdmin } = useUser();
   const [onboardings, setOnboardings] = useState([]);
   const [loading, setLoading]         = useState(true);
   const [filter, setFilter]           = useState('');
   const [search, setSearch]           = useState('');
   const [focusSearch, setFocusSearch] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null); // onboarding en attente de confirmation
+  const [deleting, setDeleting]         = useState(false);
+  const [deleteError, setDeleteError]   = useState('');
+
+  function handleDelete(o) {
+    setDeleteError('');
+    setDeleteTarget(o);
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    setDeleteError('');
+    try {
+      await api.delete(`/api/onboardings/${deleteTarget.id}`);
+      setOnboardings(prev => prev.filter(x => x.id !== deleteTarget.id));
+      setDeleteTarget(null);
+    } catch (err) {
+      setDeleteError(err.message || 'Suppression impossible');
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   function load() {
     setLoading(true);
@@ -325,24 +352,44 @@ export default function History() {
                       </span>
                     </td>
                     <td style={{ padding: '12px 14px', borderBottom: idx < visible.length - 1 ? '1px solid var(--border)' : 'none' }}>
-                      <Link to={`/history/${o.id}`} style={{ textDecoration: 'none' }}>
-                        <button style={{
-                          display: 'inline-flex', alignItems: 'center', gap: 5,
-                          padding: '4px 10px', borderRadius: 6,
-                          border: '1px solid var(--border)', background: 'transparent',
-                          color: 'var(--muted)', cursor: 'pointer', fontSize: 11,
-                          fontFamily: 'inherit',
-                          transition: 'background var(--transition), color var(--transition)',
-                        }}
-                          onMouseEnter={e => { e.currentTarget.style.background = 'var(--surface3)'; e.currentTarget.style.color = 'var(--text)'; }}
-                          onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--muted)'; }}
-                          onFocus={e => { e.currentTarget.style.boxShadow = '0 0 0 2px var(--primary)'; }}
-                          onBlur={e => { e.currentTarget.style.boxShadow = 'none'; }}
-                        >
-                          <Icon path={IC.eye} size={12} />
-                          Détails
-                        </button>
-                      </Link>
+                      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        <Link to={`/history/${o.id}`} style={{ textDecoration: 'none' }}>
+                          <button style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 5,
+                            padding: '4px 10px', borderRadius: 6,
+                            border: '1px solid var(--border)', background: 'transparent',
+                            color: 'var(--muted)', cursor: 'pointer', fontSize: 11,
+                            fontFamily: 'inherit',
+                            transition: 'background var(--transition), color var(--transition)',
+                          }}
+                            onMouseEnter={e => { e.currentTarget.style.background = 'var(--surface3)'; e.currentTarget.style.color = 'var(--text)'; }}
+                            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--muted)'; }}
+                            onFocus={e => { e.currentTarget.style.boxShadow = '0 0 0 2px var(--primary)'; }}
+                            onBlur={e => { e.currentTarget.style.boxShadow = 'none'; }}
+                          >
+                            <Icon path={IC.eye} size={12} />
+                            Détails
+                          </button>
+                        </Link>
+                        {isSuperAdmin && (
+                          <button
+                            title="Supprimer définitivement cette entrée d'historique"
+                            onClick={() => handleDelete(o)}
+                            style={{
+                              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                              flexShrink: 0,
+                              width: 30, height: 30, borderRadius: 6,
+                              border: '1px solid rgba(239,68,68,.45)', background: 'rgba(239,68,68,.12)',
+                              color: '#f87171', cursor: 'pointer',
+                              transition: 'background var(--transition)',
+                            }}
+                            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(239,68,68,.28)'; e.currentTarget.style.color = '#fff'; }}
+                            onMouseLeave={e => { e.currentTarget.style.background = 'rgba(239,68,68,.12)'; e.currentTarget.style.color = '#f87171'; }}
+                          >
+                            <Icon path={IC.trash} size={16} strokeWidth={2.25} />
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -351,6 +398,59 @@ export default function History() {
           </div>
         )}
       </div>
+
+      {deleteTarget && (
+        <div
+          role="dialog" aria-modal="true"
+          onClick={() => { if (!deleting) { setDeleteTarget(null); setDeleteError(''); } }}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 100,
+            background: 'rgba(0,0,0,.55)', backdropFilter: 'blur(2px)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            className="card"
+            style={{ maxWidth: 420, width: '100%', padding: 24 }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+              <div style={{
+                width: 36, height: 36, borderRadius: '50%', flexShrink: 0,
+                background: 'rgba(239,68,68,.1)', border: '1px solid rgba(239,68,68,.25)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#ef4444',
+              }}>
+                <Icon path={IC.trash} size={16} strokeWidth={2} />
+              </div>
+              <h2 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)', margin: 0 }}>
+                Supprimer cet historique ?
+              </h2>
+            </div>
+
+            <p style={{ fontSize: 13, color: 'var(--text2)', lineHeight: 1.5, marginBottom: 4 }}>
+              L'entrée de <strong style={{ color: 'var(--text)' }}>{deleteTarget.employee_firstname} {deleteTarget.employee_lastname}</strong>
+              {' '}(<span style={{ fontFamily: 'monospace', fontSize: 12 }}>{deleteTarget.employee_email}</span>) sera supprimée définitivement de l'historique.
+            </p>
+            <p style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 18 }}>
+              Ceci ne supprime pas le compte M365 réel — uniquement cette ligne dans l'application.
+            </p>
+
+            {deleteError && (
+              <div className="error-box" style={{ marginBottom: 14, fontSize: 12 }}>{deleteError}</div>
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <Btn variant="ghost" disabled={deleting} onClick={() => { setDeleteTarget(null); setDeleteError(''); }}>
+                Annuler
+              </Btn>
+              <Btn variant="danger" disabled={deleting} onClick={confirmDelete}>
+                {deleting && <span className="spinner" style={{ width: 12, height: 12, borderColor: 'rgba(255,255,255,.3)', borderTopColor: '#fff' }} />}
+                {deleting ? 'Suppression…' : 'Supprimer définitivement'}
+              </Btn>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

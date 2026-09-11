@@ -301,6 +301,20 @@ function requireRole(...roles) {
   };
 }
 
+// Super-admin : identité fixe (liste d'emails), distincte du rôle 'admin' — pour des actions
+// irréversibles (ex. suppression définitive de l'historique) qu'on ne veut réserver qu'à une
+// poignée de personnes de confiance, même parmi les admins.
+function isSuperAdmin(user) {
+  const allowed = (process.env.SUPER_ADMIN_EMAILS || 'harchad.randriamifidy@captivea.com')
+    .split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
+  return !!user?.email && allowed.includes(user.email.toLowerCase());
+}
+
+function requireSuperAdmin(req, res, next) {
+  if (!isSuperAdmin(req.user)) return res.status(403).json({ error: 'Réservé au super-admin' });
+  next();
+}
+
 const ASSIGNABLE_ROLES = ['operator', 'admin'];
 
 function canAssignRole(actorRole, targetRole) {
@@ -437,7 +451,7 @@ app.post('/api/auth/logout', async (req, res) => {
 });
 
 app.get('/api/auth/me', auth, async (req, res) => {
-  res.json({ user: req.user, mock: MOCK_GRAPH });
+  res.json({ user: req.user, mock: MOCK_GRAPH, isSuperAdmin: isSuperAdmin(req.user) });
 });
 
 app.post('/api/auth/verify-password', auth, authLimiter, async (req, res) => {
@@ -1052,6 +1066,21 @@ app.get('/api/onboardings/:id', auth, async (req, res) => {
     if (temp_password) tempPasswordStore.delete(req.params.id);
   }
   res.json({ ...onb, temp_password, steps });
+});
+
+// Suppression définitive d'une entrée d'historique — réservée au super-admin (pas aux admins
+// classiques) car irréversible : ne supprime que la ligne applicative, jamais le compte M365
+// réel côté Azure AD (à faire séparément si besoin, cf. Offboarding).
+app.delete('/api/onboardings/:id', auth, requireSuperAdmin, async (req, res) => {
+  if (!isValidUUID(req.params.id)) return res.status(400).json({ error: 'ID invalide' });
+  const db = await getDB();
+  const onb = dbRow(db, `SELECT id, employee_email FROM onboardings WHERE id=?`, [req.params.id]);
+  if (!onb) return res.status(404).json({ error: 'Onboarding introuvable' });
+  db.run(`DELETE FROM onboarding_steps WHERE onboarding_id=?`, [req.params.id]);
+  db.run(`DELETE FROM onboardings WHERE id=?`, [req.params.id]);
+  saveDB();
+  logAction(`[${req.params.id}] 🗑️ Historique supprimé par ${req.user.email} (${onb.employee_email})`);
+  res.json({ ok: true });
 });
 
 app.post('/api/onboardings', auth, async (req, res) => {
