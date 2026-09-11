@@ -24,6 +24,13 @@ if (fs.existsSync(envFile)) {
   });
 }
 
+// Filet de sécurité : depuis Node 15+, une promesse rejetée non interceptée tue le process
+// par défaut. Un bug isolé dans une tâche en arrière-plan (ex. executeOnboardingBackground)
+// ne doit pas faire tomber tout le serveur et interrompre les onboardings en cours.
+process.on('unhandledRejection', (err) => {
+  console.error('[unhandledRejection]', err);
+});
+
 const { getDB, saveDB } = require('./db');
 
 const SETTINGS_MAP = {
@@ -625,6 +632,9 @@ async function executeOnboardingBackground(id, adUserId, userPrincipalName, step
   if (!onb) return;
 
   logAction(`[${id}] [BG] Démarrage de l'intégration groupes/Teams/GitHub pour ${onb.employee_email}`);
+
+  let bgToken = null;
+  try { bgToken = await getOffboardToken(); } catch (_) {}
 
   // Étape 4 — Groupes SharePoint & Communication
   if (step4Enabled) {
@@ -2073,8 +2083,11 @@ async function ensureDefaultAdmin() {
 
 async function recoverStaleOnboardings() {
   const db = await getDB();
+
+  // Onboardings interrompus en plein traitement (redémarrage serveur pendant l'exécution) :
+  // on ne peut pas savoir où ça s'est arrêté côté Graph, donc on marque en échec plutôt que
+  // de risquer un double traitement (création de compte en double, etc.).
   const stale = dbRows(db, `SELECT id FROM onboardings WHERE status='running'`);
-  if (!stale.length) return;
   stale.forEach(({ id }) => {
     db.run(`UPDATE onboardings SET status='failed', error_message='Interrompu (redémarrage serveur)' WHERE id=?`, [id]);
     db.run(
@@ -2082,8 +2095,18 @@ async function recoverStaleOnboardings() {
       [id]
     );
   });
-  saveDB();
-  console.log(`[startup] ${stale.length} onboarding(s) interrompu(s) marqué(s) comme échoués`);
+  if (stale.length) saveDB();
+  if (stale.length) console.log(`[startup] ${stale.length} onboarding(s) interrompu(s) marqué(s) comme échoués`);
+
+  // Onboardings créés juste avant un redémarrage, jamais démarrés (statut 'pending' — la
+  // première étape n'a encore rien touché côté Graph) : sans danger de doublon, on relance
+  // simplement leur traitement.
+  const orphaned = dbRows(db, `SELECT id FROM onboardings WHERE status='pending'`);
+  orphaned.forEach(({ id }) => {
+    logAction(`[${id}] [startup] Reprise d'un onboarding resté en attente (redémarrage serveur)`);
+    executeOnboarding(id).catch(err => console.error('[executeOnboarding][resume]', err));
+  });
+  if (orphaned.length) console.log(`[startup] ${orphaned.length} onboarding(s) en attente relancé(s)`);
 }
 
 async function loadSettingsFromDB() {
