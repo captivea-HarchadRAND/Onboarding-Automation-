@@ -25,6 +25,7 @@ const ICONS = {
   admin:        ['M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z', 'M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z'],
   security:     'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z',
   offboarding:  'M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h4a3 3 0 0 1 3 3v1',
+  transfer:     ['M17 3l4 4-4 4', 'M3 11V9a4 4 0 0 1 4-4h14', 'M7 21l-4-4 4-4', 'M21 13v2a4 4 0 0 1-4 4H3'],
   logout:       ['M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4', 'M16 17l5-5-5-5', 'M21 12H9'],
   chevronDown:  'M6 9l6 6 6-6',
   panelClose:   ['M11 3H3v18h8', 'M15 9l-3 3 3 3'],
@@ -36,9 +37,10 @@ const ICONS = {
 const NAV_GROUPS = [
   {
     items: [
-      { to: '/',        label: 'Dashboard',         icon: 'dashboard',   end: true },
-      { to: '/new',     label: 'Nouvel onboarding', icon: 'new' },
-      { to: '/history', label: 'Historique',         icon: 'history' },
+      { to: '/',         label: 'Dashboard',         icon: 'dashboard',   end: true },
+      { to: '/new',      label: 'Nouvel onboarding', icon: 'new' },
+      { to: '/transfer', label: 'Changement de poste/pays', icon: 'transfer', adminOnly: true },
+      { to: '/history',  label: 'Historique',         icon: 'history' },
     ],
   },
   {
@@ -55,6 +57,7 @@ const NAV_GROUPS = [
 const ROUTE_LABELS = {
   '/':            'Dashboard',
   '/new':         'Nouvel onboarding',
+  '/transfer':    'Changement de poste/pays',
   '/history':     'Historique',
   '/admin':       'Administration',
   '/security':    'Sécurité',
@@ -232,9 +235,11 @@ export default function Layout() {
                       {group.heading}
                     </div>
                   )}
-                  {group.items.map(item => (
-                    <SidebarLink key={item.to} item={item} />
-                  ))}
+                  {group.items
+                    .filter(item => !item.adminOnly || user?.role === 'admin')
+                    .map(item => (
+                      <SidebarLink key={item.to} item={item} />
+                    ))}
                 </div>
               );
             })}

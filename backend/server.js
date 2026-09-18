@@ -656,6 +656,90 @@ async function applySharePointCommGroups(spGroups, adUserId, userPrincipalName, 
   }
 }
 
+// Anti-escalade de privilèges : un groupId doit soit figurer parmi les groupes déjà
+// configurés par un admin (settings), soit être un vrai groupe de sécurité respectant la
+// convention de provisioning « SP - … ». Empêche un appelant de forger un groupId arbitraire
+// (ex. un groupe à privilèges) via l'onboarding manuel ou une mutation. Ignoré en mode mock.
+async function validateProvisioningGroup(groupId) {
+  if (MOCK_GRAPH) return;
+  try {
+    const cfgDb = await getDB();
+    const configuredIds = new Set();
+    for (const k of ['pointage_assignments', 'sharepoint_global_groups', 'sharepoint_country_groups']) {
+      const raw = dbRow(cfgDb, `SELECT value FROM settings WHERE key=?`, [k])?.value;
+      if (raw) { try { JSON.parse(raw).forEach(g => g && g.id && configuredIds.add(g.id)); } catch (_) {} }
+    }
+    if (configuredIds.has(groupId)) return;
+    const grp = await getGroupById(groupId);
+    const okSecurity   = grp && grp.securityEnabled === true && grp.mailEnabled === false;
+    const okConvention = grp && /^(2024_)?\s*SP\b/i.test(grp.displayName || '');
+    if (!okSecurity || !okConvention) {
+      const err = new Error('Groupe non autorisé (groupe de provisioning « SP - … » requis)');
+      err.httpStatus = 400;
+      throw err;
+    }
+  } catch (e) {
+    if (e.httpStatus) throw e;
+    if (e.graphStatus === 404) { const err = new Error('Groupe introuvable dans l\'organisation'); err.httpStatus = 400; throw err; }
+    console.error('[validateProvisioningGroup]', e.message);
+    const err = new Error('Validation impossible (Microsoft Graph indisponible)');
+    err.httpStatus = 502;
+    throw err;
+  }
+}
+
+// Liste tous les groupes M365 actuels d'un utilisateur (même logique que l'offboarding :
+// tous les groupes sont retirables — le compte et sa licence, eux, ne sont jamais touchés
+// par une mutation). Utilisé pour l'aperçu et l'exécution d'un changement de poste/pays.
+async function getUserGroups(userId) {
+  const { graphFetch } = require('./lib/graph');
+  const memberOf = await graphFetch(`/users/${encodeURIComponent(userId)}/memberOf?$select=id,displayName`);
+  return (memberOf?.value || [])
+    .filter(g => g['@odata.type'] === '#microsoft.graph.group')
+    .map(g => ({ id: g.id, displayName: g.displayName }));
+}
+
+// Ajoute l'utilisateur au groupe de rôle principal (groupId) puis aux groupes SharePoint/
+// communication résolus pour son nouveau poste/pays/ville. Partagé entre l'onboarding manuel
+// et la mutation de poste/pays.
+async function assignPrimaryGroupAndSpComm({ adUser, groupId, groupName, jobRole, location, city, logPrefix }) {
+  const { graphFetch } = require('./lib/graph');
+  let skipped = false;
+  try {
+    await graphFetch(`/groups/${encodeURIComponent(groupId)}/members/$ref`, {
+      method: 'POST',
+      body: { '@odata.id': `https://graph.microsoft.com/v1.0/directoryObjects/${adUser.id}` },
+    });
+    logAction(`${logPrefix} ✅ ${adUser.displayName} ajouté au groupe "${groupName}"`);
+  } catch (e) {
+    if (e.graphStatus === 400 && /already exist/i.test(e.message || '')) {
+      skipped = true;
+      logAction(`${logPrefix} ⏭️ ${adUser.displayName} déjà membre de "${groupName}"`);
+    } else {
+      const err = new Error(e.message);
+      err.httpStatus = 500;
+      throw err;
+    }
+  }
+
+  let spGroupCount = 0;
+  try {
+    const cfgDb = await getDB();
+    const spGroups = await resolveSharePointCommGroups(cfgDb, {
+      location: location?.trim() || '',
+      jobRole: jobRole?.trim() || '',
+      city: city?.trim() || '',
+      excludeGroupId: groupId,
+    });
+    spGroupCount = spGroups.length;
+    await applySharePointCommGroups(spGroups, adUser.id, adUser.userPrincipalName || adUser.mail || adUser.displayName, logPrefix);
+  } catch (e) {
+    logAction(`${logPrefix} ❌ Groupes SharePoint/communication : ${e.message}`);
+  }
+
+  return { skipped, spGroupCount };
+}
+
 async function executeOnboardingBackground(id, adUserId, userPrincipalName, step4Enabled) {
   const db = await getDB();
   const onb = dbRow(db, `SELECT * FROM onboardings WHERE id=?`, [id]);
@@ -920,29 +1004,10 @@ app.post('/api/onboardings/manual', auth, requireRole('admin'), async (req, res)
   if (!idOk(groupId))
     return res.status(400).json({ error: 'Identifiant de groupe invalide' });
 
-  // Anti-escalade de privilèges : mêmes règles que POST /api/onboardings — empêche un
-  // operator d'ajouter un compte à un groupe arbitraire (ex. un groupe à privilèges) via
-  // un groupId forgé. Ignoré en mode mock (données fictives).
-  if (!MOCK_GRAPH) {
-    try {
-      const cfgDb = await getDB();
-      const configuredIds = new Set();
-      for (const k of ['pointage_assignments', 'sharepoint_global_groups', 'sharepoint_country_groups']) {
-        const raw = dbRow(cfgDb, `SELECT value FROM settings WHERE key=?`, [k])?.value;
-        if (raw) { try { JSON.parse(raw).forEach(g => g && g.id && configuredIds.add(g.id)); } catch (_) {} }
-      }
-      if (!configuredIds.has(groupId)) {
-        const grp = await getGroupById(groupId);
-        const okSecurity   = grp && grp.securityEnabled === true && grp.mailEnabled === false;
-        const okConvention = grp && /^(2024_)?\s*SP\b/i.test(grp.displayName || '');
-        if (!okSecurity || !okConvention)
-          return res.status(400).json({ error: 'Groupe non autorisé (groupe de provisioning « SP - … » requis)' });
-      }
-    } catch (e) {
-      if (e.graphStatus === 404) return res.status(400).json({ error: 'Groupe introuvable dans l\'organisation' });
-      console.error('[manual] validation Graph:', e.message);
-      return res.status(502).json({ error: 'Validation impossible (Microsoft Graph indisponible)' });
-    }
+  try {
+    await validateProvisioningGroup(groupId);
+  } catch (e) {
+    return res.status(e.httpStatus || 500).json({ error: e.message });
   }
 
   const { graphFetch } = require('./lib/graph');
@@ -957,40 +1022,17 @@ app.post('/api/onboardings/manual', auth, requireRole('admin'), async (req, res)
     return res.status(500).json({ error: e.message });
   }
 
-  // 2. Add to group — detect "already member"
-  let skipped = false;
+  // 2 & 3. Groupe principal + groupes SharePoint/communication (mêmes règles que l'étape 4
+  // du flow automatique). Toujours exécuté pour les groupes SP/comm, indépendamment du poste.
+  let skipped, spGroupCount;
   try {
-    await graphFetch(`/groups/${encodeURIComponent(groupId)}/members/$ref`, {
-      method: 'POST',
-      body: { '@odata.id': `https://graph.microsoft.com/v1.0/directoryObjects/${adUser.id}` },
-    });
-    logAction(`[manual] ✅ ${adUser.displayName} ajouté au groupe "${groupName}"`);
+    ({ skipped, spGroupCount } = await assignPrimaryGroupAndSpComm({
+      adUser: { ...adUser, userPrincipalName: email.trim() },
+      groupId, groupName, jobRole, location, city,
+      logPrefix: '[manual]',
+    }));
   } catch (e) {
-    if (e.graphStatus === 400 && /already exist/i.test(e.message || '')) {
-      skipped = true;
-      logAction(`[manual] ⏭️ ${adUser.displayName} déjà membre de "${groupName}"`);
-    } else {
-      logAction(`[manual] ❌ Ajout groupe "${groupName}" : ${e.message}`);
-      return res.status(500).json({ error: e.message });
-    }
-  }
-
-  // 3. Groupes SharePoint & Communication (mêmes règles que l'étape 4 du flow automatique).
-  // Toujours exécuté — les groupes globaux (et, si un pays est fourni, les groupes pays/ville)
-  // doivent être ajoutés systématiquement, indépendamment du poste.
-  let spGroupCount = 0;
-  try {
-    const cfgDb = await getDB();
-    const spGroups = await resolveSharePointCommGroups(cfgDb, {
-      location: location?.trim() || '',
-      jobRole: jobRole?.trim() || '',
-      city: city?.trim() || '',
-      excludeGroupId: groupId,
-    });
-    spGroupCount = spGroups.length;
-    await applySharePointCommGroups(spGroups, adUser.id, email.trim(), '[manual]');
-  } catch (e) {
-    logAction(`[manual] ❌ Groupes SharePoint/communication : ${e.message}`);
+    return res.status(e.httpStatus || 500).json({ error: e.message });
   }
 
   // 4. GitHub invitation
@@ -1039,6 +1081,98 @@ app.post('/api/onboardings/manual', auth, requireRole('admin'), async (req, res)
   }
 
   return res.json({ ok: true, skipped, githubInvited, spGroupCount, displayName: adUser.displayName, groupName });
+});
+
+// ─── Mutation (changement de poste / pays) ────────────────────────────────────
+// Pour un employé déjà onboardé : retire les groupes liés à son ancien poste/pays (détectés
+// automatiquement via ses groupes actuels — jamais les groupes globaux, valables pour tout le
+// monde) et l'ajoute aux groupes de son nouveau poste/pays, comme un onboarding normal.
+
+app.get('/api/onboardings/transfer/groups', auth, requireRole('admin'), async (req, res) => {
+  const email = req.query.email?.trim();
+  if (!isValidEmail(email)) return res.status(400).json({ error: 'Email invalide' });
+  const { graphFetch } = require('./lib/graph');
+  let adUser;
+  try {
+    adUser = await graphFetch(`/users/${encodeURIComponent(email)}?$select=id,displayName`);
+  } catch (e) {
+    if (e.graphStatus === 404) return res.status(404).json({ error: 'Utilisateur introuvable dans Azure AD' });
+    return res.status(500).json({ error: e.message });
+  }
+  try {
+    const groups = MOCK_GRAPH ? [] : await getUserGroups(adUser.id);
+    res.json({ displayName: adUser.displayName, groups });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
+app.post('/api/onboardings/transfer', auth, requireRole('admin'), async (req, res) => {
+  const { email, groupId, groupName, jobRole, location, city } = req.body;
+
+  if (!isValidEmail(email?.trim()))
+    return res.status(400).json({ error: 'Email invalide' });
+  const tooLong = (s, n) => typeof s === 'string' && s.length > n;
+  if (tooLong(groupName, 256))
+    return res.status(400).json({ error: 'Nom de groupe trop long' });
+  if (tooLong(jobRole, 128) || tooLong(location, 64) || tooLong(city, 128))
+    return res.status(400).json({ error: 'Champ trop long' });
+  const idOk = (v) => isValidUUID(v) || (MOCK_GRAPH && /^mock-[\w-]+$/.test(v));
+  if (!idOk(groupId))
+    return res.status(400).json({ error: 'Identifiant de groupe invalide' });
+
+  try {
+    await validateProvisioningGroup(groupId);
+  } catch (e) {
+    return res.status(e.httpStatus || 500).json({ error: e.message });
+  }
+
+  const { graphFetch } = require('./lib/graph');
+
+  let adUser;
+  try {
+    adUser = await graphFetch(`/users/${encodeURIComponent(email.trim())}?$select=id,displayName,userPrincipalName`);
+  } catch (e) {
+    if (e.graphStatus === 404) return res.status(404).json({ error: 'Utilisateur introuvable dans Azure AD' });
+    logAction(`[transfer] ❌ Lookup AD ${email} : ${e.message}`);
+    return res.status(500).json({ error: e.message });
+  }
+
+  // 1. Retrait de tous les groupes actuels (même logique que l'offboarding) — le compte et
+  // sa licence ne sont jamais touchés, seules les appartenances aux groupes le sont.
+  let removedGroups = [];
+  if (!MOCK_GRAPH) {
+    try {
+      const currentGroups = await getUserGroups(adUser.id);
+      for (const g of currentGroups.filter(g => g.id !== groupId)) {
+        try {
+          await graphFetch(`/groups/${encodeURIComponent(g.id)}/members/${encodeURIComponent(adUser.id)}/$ref`, { method: 'DELETE' });
+          removedGroups.push(g.displayName);
+          logAction(`[transfer] ✅ ${adUser.displayName} retiré du groupe "${g.displayName}"`);
+        } catch (e) {
+          logAction(`[transfer] ❌ Retrait groupe "${g.displayName}" : ${e.message}`);
+        }
+      }
+    } catch (e) {
+      logAction(`[transfer] ❌ Lecture des groupes actuels : ${e.message}`);
+      return res.status(502).json({ error: `Impossible de lire les groupes actuels : ${e.message}` });
+    }
+  }
+
+  // 2 & 3. Nouveau groupe principal + groupes SharePoint/communication du nouveau poste/pays
+  let skipped, spGroupCount;
+  try {
+    ({ skipped, spGroupCount } = await assignPrimaryGroupAndSpComm({
+      adUser: { ...adUser, userPrincipalName: adUser.userPrincipalName || email.trim() },
+      groupId, groupName, jobRole, location, city,
+      logPrefix: '[transfer]',
+    }));
+  } catch (e) {
+    return res.status(e.httpStatus || 500).json({ error: e.message });
+  }
+
+  logAction(`[transfer] 🎉 Mutation terminée pour ${adUser.displayName} — ${removedGroups.length} groupe(s) retiré(s), nouveau groupe "${groupName}"`);
+  res.json({ ok: true, skipped, spGroupCount, removedGroups, displayName: adUser.displayName, groupName });
 });
 
 // ─── Onboarding routes ────────────────────────────────────────────────────────
