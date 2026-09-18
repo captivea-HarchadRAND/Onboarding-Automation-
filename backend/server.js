@@ -710,15 +710,42 @@ async function validateProvisioningGroup(groupId) {
   }
 }
 
-// Liste tous les groupes M365 actuels d'un utilisateur (même logique que l'offboarding :
-// tous les groupes sont retirables — le compte et sa licence, eux, ne sont jamais touchés
-// par une mutation). Utilisé pour l'aperçu et l'exécution d'un changement de poste/pays.
+// Groupes « gérés par l'app » éligibles à un retrait automatique lors d'une mutation
+// (changement de poste/pays) : globaux, pays/villes, communication, pointage. Les groupes
+// clients/métier (ex. accès à un dossier client) ne sont jamais dans ce pool et ne seront
+// donc jamais touchés par une mutation.
+async function getRemovableGroupPool(db) {
+  const ids = new Set();
+  for (const k of ['sharepoint_global_groups', 'sharepoint_country_groups', 'department_assignments', 'pointage_comm_assignments', 'pointage_assignments']) {
+    const raw = dbRow(db, `SELECT value FROM settings WHERE key=?`, [k])?.value;
+    if (!raw) continue;
+    try {
+      const arr = JSON.parse(raw);
+      arr.forEach(g => {
+        if (g?.id) ids.add(g.id);
+        (g.cities || []).forEach(c => { if (c?.id) ids.add(c.id); });
+      });
+    } catch (_) {}
+  }
+  return ids;
+}
+
+// Liste les groupes M365 actuels d'un utilisateur, avec un indicateur "removable" : vrai si
+// le groupe fait partie du pool ci-dessus, OU s'il suit la convention de sécurité « SP - … »
+// (le groupe de rôle principal). Les groupes hors de ce périmètre (accès client, etc.) sont
+// listés mais jamais retirés. Utilisé pour l'aperçu et l'exécution d'une mutation.
 async function getUserGroups(userId) {
   const { graphFetch } = require('./lib/graph');
-  const memberOf = await graphFetch(`/users/${encodeURIComponent(userId)}/memberOf?$select=id,displayName`);
-  return (memberOf?.value || [])
-    .filter(g => g['@odata.type'] === '#microsoft.graph.group')
-    .map(g => ({ id: g.id, displayName: g.displayName }));
+  const memberOf = await graphFetch(`/users/${encodeURIComponent(userId)}/memberOf?$select=id,displayName,securityEnabled,mailEnabled`);
+  const groups = (memberOf?.value || []).filter(g => g['@odata.type'] === '#microsoft.graph.group');
+  const db = await getDB();
+  const pool = await getRemovableGroupPool(db);
+  const spConvention = /^(2024_)?\s*SP\b/i;
+  return groups.map(g => ({
+    id: g.id,
+    displayName: g.displayName,
+    removable: pool.has(g.id) || (g.securityEnabled === true && g.mailEnabled === false && spConvention.test(g.displayName || '')),
+  }));
 }
 
 // Ajoute l'utilisateur au groupe de rôle principal (groupId) puis aux groupes SharePoint/
@@ -1160,13 +1187,14 @@ app.post('/api/onboardings/transfer', auth, requireRole('admin'), async (req, re
     return res.status(500).json({ error: e.message });
   }
 
-  // 1. Retrait de tous les groupes actuels (même logique que l'offboarding) — le compte et
-  // sa licence ne sont jamais touchés, seules les appartenances aux groupes le sont.
+  // 1. Retrait des groupes gérés par l'app uniquement (globaux/pays/villes/communication/
+  // pointage + groupe SP) — jamais les groupes hors de ce périmètre (accès client, etc.).
+  // Le compte et sa licence ne sont jamais touchés.
   let removedGroups = [];
   if (!MOCK_GRAPH) {
     try {
       const currentGroups = await getUserGroups(adUser.id);
-      for (const g of currentGroups.filter(g => g.id !== groupId)) {
+      for (const g of currentGroups.filter(g => g.removable && g.id !== groupId)) {
         try {
           await graphFetch(`/groups/${encodeURIComponent(g.id)}/members/${encodeURIComponent(adUser.id)}/$ref`, { method: 'DELETE' });
           removedGroups.push(g.displayName);

@@ -303,7 +303,7 @@ export default function Transfer() {
             Changement de poste / pays
           </h1>
           <p style={{ fontSize: 13, color: 'var(--muted)', marginTop: 4 }}>
-            Retire la personne de tous ses groupes actuels (comme un offboarding, sans toucher au compte ni à la licence) puis l'ajoute aux groupes de son nouveau poste/pays.
+            Retire la personne des groupes liés à son ancien poste/pays (globaux, pays/ville, communication, groupe SP) et l'ajoute aux groupes du nouveau — les groupes hors périmètre onboarding (accès client, etc.) ne sont jamais touchés.
           </p>
         </div>
       </div>
@@ -345,7 +345,7 @@ export default function Transfer() {
             <div className="card" style={{ background: 'var(--surface2)' }}>
               <h2 style={{ fontSize: 14, fontWeight: 600, marginBottom: 4, color: 'var(--text)' }}>{lookup.displayName}</h2>
               <p style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 14 }}>
-                Groupes actuels — {lookup.groups.length > 0 ? 'tous seront retirés' : 'aucun'}
+                Groupes actuels — seuls ceux gérés par l'app seront retirés
               </p>
               {lookup.groups.length === 0 ? (
                 <p style={{ fontSize: 12, color: 'var(--muted)' }}>Aucun groupe (ou mode développement — Graph simulée).</p>
@@ -355,13 +355,17 @@ export default function Transfer() {
                     <div key={g.id} style={{
                       display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
                       padding: '6px 10px', borderRadius: 6,
-                      background: 'rgba(239,68,68,.06)', border: '1px solid rgba(239,68,68,.2)',
+                      background: g.removable ? 'rgba(239,68,68,.06)' : 'var(--surface)',
+                      border: `1px solid ${g.removable ? 'rgba(239,68,68,.2)' : 'var(--border)'}`,
                     }}>
                       <span style={{ fontSize: 12, color: 'var(--text2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={g.displayName}>
                         {g.displayName}
                       </span>
-                      <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '.3px', textTransform: 'uppercase', color: '#ef4444', flexShrink: 0 }}>
-                        sera retiré
+                      <span style={{
+                        fontSize: 9, fontWeight: 700, letterSpacing: '.3px', textTransform: 'uppercase', flexShrink: 0,
+                        color: g.removable ? '#ef4444' : 'var(--muted)',
+                      }}>
+                        {g.removable ? 'sera retiré' : 'conservé'}
                       </span>
                     </div>
                   ))}
