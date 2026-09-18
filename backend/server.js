@@ -548,6 +548,28 @@ app.get('/api/graph/groups', auth, async (req, res) => {
   }
 });
 
+// Aperçu des groupes SharePoint/communication qui seront ajoutés pour un poste/pays/ville
+// donné — sans rien exécuter. Utilisé pour confirmer avant une mutation ou un onboarding manuel.
+app.get('/api/onboardings/resolve-groups', auth, async (req, res) => {
+  const { jobRole, location, city, excludeGroupId } = req.query;
+  const tooLong = (s, n) => typeof s === 'string' && s.length > n;
+  if (tooLong(jobRole, 128) || tooLong(location, 64) || tooLong(city, 128))
+    return res.status(400).json({ error: 'Champ trop long' });
+  try {
+    const db = await getDB();
+    const groups = await resolveSharePointCommGroups(db, {
+      jobRole: jobRole?.trim() || '',
+      location: location?.trim() || '',
+      city: city?.trim() || '',
+      excludeGroupId: excludeGroupId?.trim() || null,
+    });
+    res.json(groups.map(g => ({ id: g.id, label: g.label })));
+  } catch (err) {
+    console.error('[resolve-groups]', err.message);
+    res.status(500).json({ error: 'Erreur lors du calcul des groupes' });
+  }
+});
+
 app.get('/api/graph/groups/:id', auth, async (req, res) => {
   try {
     const group = await getGroupById(req.params.id);

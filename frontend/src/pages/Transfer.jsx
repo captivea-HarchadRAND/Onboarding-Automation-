@@ -123,6 +123,8 @@ export default function Transfer() {
   const [spCountryGroups, setSpCountryGroups] = useState([]);
   const [autoGroup, setAutoGroup] = useState(null);
   const [groupLoading, setGroupLoading] = useState(false);
+  const [newGroupsPreview, setNewGroupsPreview] = useState([]);
+  const [newGroupsLoading, setNewGroupsLoading] = useState(false);
 
   const [lookup, setLookup] = useState(null);       // { displayName, groups } de l'email recherché
   const [lookupLoading, setLookupLoading] = useState(false);
@@ -168,6 +170,27 @@ export default function Transfer() {
       .catch(() => {})
       .finally(() => setGroupLoading(false));
   }, [form.jobRole, form.location]);
+
+  // Aperçu des groupes SharePoint/communication qui seront ajoutés (globaux + pays/ville +
+  // communication), pour confirmation avant de valider la mutation.
+  useEffect(() => {
+    const { jobRole, location, city } = form;
+    if (!jobRole.trim()) { setNewGroupsPreview([]); return; }
+    const isGlobal = GLOBAL_ROLES.has(jobRole.trim());
+    if (!isGlobal && !location.trim()) { setNewGroupsPreview([]); return; }
+
+    setNewGroupsLoading(true);
+    const params = new URLSearchParams({ jobRole: jobRole.trim() });
+    if (!isGlobal) {
+      params.set('location', location.trim());
+      if (city.trim()) params.set('city', city.trim());
+    }
+    if (autoGroup?.id) params.set('excludeGroupId', autoGroup.id);
+    api.get(`/api/onboardings/resolve-groups?${params.toString()}`)
+      .then(data => setNewGroupsPreview(Array.isArray(data) ? data : []))
+      .catch(() => setNewGroupsPreview([]))
+      .finally(() => setNewGroupsLoading(false));
+  }, [form.jobRole, form.location, form.city, autoGroup]);
 
   async function handleLookup() {
     const email = form.email.trim();
@@ -401,6 +424,43 @@ export default function Transfer() {
               )}
             </div>
           </div>
+
+          {autoGroup && (
+            <div className="card" style={{ marginBottom: 16 }}>
+              <h2 style={{ fontSize: 14, fontWeight: 600, marginBottom: 4, color: 'var(--text)' }}>Confirmation</h2>
+              <p style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 14 }}>
+                Groupes qui seront ajoutés {newGroupsLoading && '(calcul en cours…)'}
+              </p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+                  padding: '6px 10px', borderRadius: 6,
+                  background: 'rgba(34,197,94,.06)', border: '1px solid rgba(34,197,94,.2)',
+                }}>
+                  <span style={{ fontSize: 12, color: 'var(--text2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={autoGroup.displayName}>
+                    {autoGroup.displayName} <span style={{ color: 'var(--muted)', fontSize: 10 }}>(groupe principal)</span>
+                  </span>
+                  <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '.3px', textTransform: 'uppercase', color: '#22c55e', flexShrink: 0 }}>
+                    sera ajouté
+                  </span>
+                </div>
+                {newGroupsPreview.map(g => (
+                  <div key={g.id} style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+                    padding: '6px 10px', borderRadius: 6,
+                    background: 'rgba(34,197,94,.06)', border: '1px solid rgba(34,197,94,.2)',
+                  }}>
+                    <span style={{ fontSize: 12, color: 'var(--text2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={g.label}>
+                      {g.label}
+                    </span>
+                    <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '.3px', textTransform: 'uppercase', color: '#22c55e', flexShrink: 0 }}>
+                      sera ajouté
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
             <button type="submit" disabled={loading || !autoGroup || (!isGlobal && citiesForLocation.length > 0 && !form.city)}
