@@ -762,8 +762,70 @@ function DomainRows({ domains, setDomains }) {
   );
 }
 
+function MailboxRows({ mailboxes, setMailboxes }) {
+  const [confirmIdx, setConfirmIdx] = useState(null);
+
+  function add() {
+    if (mailboxes.some(m => m.email.trim() === '')) return;
+    setMailboxes(list => [...list, { email: '', label: '' }]);
+  }
+  function remove(i) { setMailboxes(list => list.filter((_, idx) => idx !== i)); setConfirmIdx(null); }
+  function update(i, field, val) { setMailboxes(list => list.map((item, idx) => idx === i ? { ...item, [field]: val } : item)); }
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 14, lineHeight: 1.5 }}>
+        Chaque nouvel employé reçoit l'accès à ces boîtes partagées. C'est une permission Exchange posée sur la boîte elle-même, pas un groupe.
+      </div>
+      {mailboxes.length === 0 && (
+        <div style={{ fontSize: 12, color: 'var(--muted)', padding: '10px 0', fontStyle: 'italic' }}>
+          Aucune boîte partagée configurée.
+        </div>
+      )}
+      {mailboxes.map((m, i) => (
+        <div key={i} style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr auto', gap: 8, marginBottom: 8, alignItems: 'center' }}>
+          <input
+            placeholder="support@captivea.com"
+            value={m.email}
+            onChange={e => update(i, 'email', e.target.value)}
+            style={{
+              fontFamily: 'monospace', fontSize: 13,
+              ...(m.email.trim() === '' ? { borderColor: 'rgba(239,68,68,.6)' } : {}),
+            }}
+          />
+          <input
+            placeholder="Nom (optionnel)"
+            value={m.label || ''}
+            onChange={e => update(i, 'label', e.target.value)}
+          />
+          {confirmIdx === i ? (
+            <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+              <button type="button" onClick={() => remove(i)} style={{ background: 'rgba(239,68,68,.12)', border: '1px solid rgba(239,68,68,.4)', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', color: '#ef4444', fontSize: 11, fontWeight: 600 }}>Oui</button>
+              <button type="button" onClick={() => setConfirmIdx(null)} style={{ background: 'transparent', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', color: 'var(--muted)', fontSize: 11 }}>Non</button>
+            </div>
+          ) : (
+            <button type="button" onClick={() => setConfirmIdx(i)} style={{ background: 'transparent', border: '1px solid var(--border)', borderRadius: 6, width: 30, height: 34, cursor: 'pointer', color: 'var(--muted)', fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center' }} title="Supprimer">✕</button>
+          )}
+        </div>
+      ))}
+      {(() => {
+        const blocked = mailboxes.some(m => m.email.trim() === '');
+        return (
+          <button type="button" onClick={add} disabled={blocked}
+            style={{ marginTop: 4, background: 'transparent', border: `1px dashed ${blocked ? 'rgba(239,68,68,.4)' : 'var(--border)'}`, borderRadius: 6, padding: '6px 14px', cursor: blocked ? 'not-allowed' : 'pointer', color: blocked ? 'rgba(239,68,68,.6)' : 'var(--muted)', fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, opacity: blocked ? 0.7 : 1 }}
+          >
+            <span style={{ fontSize: 16, lineHeight: 1 }}>+</span>
+            {blocked ? "Renseignez l'adresse en attente" : 'Ajouter une boîte partagée'}
+          </button>
+        );
+      })()}
+    </div>
+  );
+}
+
 function TabOrg({ locations, onLocationsChange }) {
   const [globalGroups,        setGlobalGroups]        = useState(null);
+  const [sharedMailboxes,     setSharedMailboxes]     = useState([]);
   const [countryGroups,       setCountryGroups]       = useState(null);
   const [communicationGroups, setCommunicationGroups] = useState(null);
   const [pointageRoles,       setPointageRoles]       = useState([]);
@@ -775,6 +837,7 @@ function TabOrg({ locations, onLocationsChange }) {
   useEffect(() => {
     api.get('/api/admin/settings').then(data => {
       setGlobalGroups(data.sharepoint_global_groups   || []);
+      setSharedMailboxes(data.global_shared_mailboxes || []);
       setCountryGroups(data.sharepoint_country_groups || []);
       setPointageRoles(data.pointage_departments       || []);
       setPointageCommAssign(data.pointage_comm_assignments || []);
@@ -799,6 +862,8 @@ function TabOrg({ locations, onLocationsChange }) {
       ...communicationGroups.map(g => ({ label: g.name, id: g.id })),
     ].some(g => !g.id?.trim());
     if (hasMissingId) { setError('Chaque groupe doit avoir un Group Object ID.'); setSaving(false); return; }
+    const emailRe = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+    if (sharedMailboxes.some(m => !emailRe.test(m.email.trim()))) { setError('Chaque boîte partagée doit avoir une adresse email valide.'); setSaving(false); return; }
     const hasNoPays = communicationGroups.filter(g => g.id).some(g => g.location !== 'ALL' && (g.departments || []).length > 0 && (g.countries || []).length === 0);
     if (hasNoPays) { setError('Un groupe Default avec des rôles doit avoir au moins un pays.'); setSaving(false); return; }
     // Villes : si renseignée, une ville doit avoir un nom ET un Group Object ID
@@ -842,6 +907,7 @@ function TabOrg({ locations, onLocationsChange }) {
 
       await api.put('/api/admin/settings', {
         sharepoint_global_groups:  globalGroups,
+        global_shared_mailboxes:   sharedMailboxes.map(m => ({ email: m.email.trim().toLowerCase(), ...(m.label?.trim() ? { label: m.label.trim() } : {}) })),
         sharepoint_country_groups: cleanCountryGroups,
         department_assignments:    deptAssignments,
         pointage_comm_assignments: updatedPointageComm,
@@ -857,7 +923,8 @@ function TabOrg({ locations, onLocationsChange }) {
 
   const NAV = [
     { key: 'global',  iconPath: ['M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z', 'M2 12h20', 'M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z'], label: 'Globaux',      sub: 'Tous les employés',     count: globalGroups?.length },
-    { key: 'country', iconPath: ['M1 6v16l7-4 8 4 7-4V2l-7 4-8-4-7 4z', 'M8 2v16', 'M16 6v16'],                                                                                           label: 'Par pays',     sub: 'Selon la localisation', count: countryGroups?.length },
+    { key: 'mailbox', iconPath: ['M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z', 'M22 6l-10 7L2 6'], label: 'Boîtes partagées', sub: 'Tous les employés', title: 'Boîtes partagées globales', count: sharedMailboxes.length },
+    { key: 'country', iconPath: ['M1 6v16l7-4 8 4 7-4V2l-7 4-8-4-7 4z', 'M8 2v16', 'M16 6v16'],                                                                                         label: 'Par pays',     sub: 'Selon la localisation', count: countryGroups?.length },
     { key: 'comm',    iconPath: ['M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13.2 19.79 19.79 0 0 1 1.61 4.6 2 2 0 0 1 3.6 2.4h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.18 6.18l1.87-1.87a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z'], label: 'Communication', sub: 'Par département',       count: communicationGroups?.length },
   ];
 
@@ -925,13 +992,14 @@ function TabOrg({ locations, onLocationsChange }) {
                 </svg>
               </span>
               <div>
-                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>Groupes {activeNav?.label.toLowerCase()}</div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>{activeNav?.title || `Groupes ${activeNav?.label.toLowerCase()}`}</div>
                 <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 1 }}>{activeNav?.sub}</div>
               </div>
             </div>
             {/* Content */}
             <div style={{ padding: '20px 24px', overflowY: 'auto', maxHeight: 'calc(100vh - 320px)' }}>
               {activeSection === 'global'  && <GroupRows groups={globalGroups}  setGroups={setGlobalGroups} />}
+              {activeSection === 'mailbox' && <MailboxRows mailboxes={sharedMailboxes} setMailboxes={setSharedMailboxes} />}
               {activeSection === 'country' && <GroupRows groups={countryGroups} setGroups={setCountryGroups} showLocation showCities locations={locations} />}
               {activeSection === 'comm'    && <CommGroupRows groups={communicationGroups} setGroups={setCommunicationGroups} locations={locations} allowedRoles={pointageRoles} />}
             </div>

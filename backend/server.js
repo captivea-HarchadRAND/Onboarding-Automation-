@@ -41,6 +41,7 @@ const SETTINGS_MAP = {
   usage_location:        'USAGE_LOCATION',
   force_change_password:        'FORCE_CHANGE_PASSWORD',
   sharepoint_global_groups:  'SP_GLOBAL_GROUPS',
+  global_shared_mailboxes:   'GLOBAL_SHARED_MAILBOXES',
   sharepoint_country_groups: 'SP_COUNTRY_GROUPS',
   communication_groups:      'SP_COMMUNICATION_GROUPS',
   pointage_assignments:      'SP_POINTAGE_ASSIGNMENTS',
@@ -751,6 +752,98 @@ async function getUserGroups(userId) {
 // Ajoute l'utilisateur au groupe de rôle principal (groupId) puis aux groupes SharePoint/
 // communication résolus pour son nouveau poste/pays/ville. Partagé entre l'onboarding manuel
 // et la mutation de poste/pays.
+// Donne à l'utilisateur l'accès à chaque boîte partagée globale configurée (Administration →
+// Groupes → Boîtes partagées). Ce n'est pas un ajout de membre Graph mais une permission posée
+// sur la boîte elle-même, via l'action Exchange AddMailboxPermission. `retry` : à l'onboarding,
+// la boîte du nouvel employé peut mettre quelques minutes à exister côté Exchange.
+async function applyGlobalSharedMailboxes(userPrincipalName, logPrefix, { retry = false } = {}) {
+  const db = await getDB();
+  let mailboxes = [];
+  try { mailboxes = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='global_shared_mailboxes'`)?.value || '[]'); } catch (_) {}
+  mailboxes = mailboxes.filter(m => m && m.email);
+  if (!mailboxes.length) return 0;
+  if (MOCK_GRAPH) {
+    logAction(`${logPrefix} ⏭️ Boîtes partagées globales — ignorées en mode mock`);
+    return 0;
+  }
+
+  const notReady = /couldn'?t be found|could not find|not found|recipient/i;
+  const delays = retry ? [30, 60, 120] : [];
+  let granted = 0;
+  for (const m of mailboxes) {
+    const name = m.label || m.email;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await runExchangeScript({ Action: 'AddMailboxPermission', Identity: m.email, User: userPrincipalName });
+        logAction(`${logPrefix} ✅ Accès à la boîte partagée "${name}"`);
+        granted++;
+        break;
+      } catch (e) {
+        if (/already/i.test(e.message || '')) {
+          logAction(`${logPrefix} ⏭️ Accès déjà présent sur la boîte partagée "${name}"`);
+          break;
+        }
+        if (attempt < delays.length && notReady.test(e.message || '')) {
+          logAction(`${logPrefix} ⏳ Exchange pas encore prêt pour "${name}" — retry ${attempt + 1}/${delays.length} dans ${delays[attempt]}s...`);
+          await sleep(delays[attempt] * 1000);
+        } else {
+          logAction(`${logPrefix} ❌ Boîte partagée "${name}" : ${e.message}`);
+          break;
+        }
+      }
+    }
+  }
+  return granted;
+}
+
+// Invite un email à l'org GitHub + l'ajoute au team par défaut. Partagé entre l'invitation
+// initiale (à la création du compte) et le rappel automatique envoyé 7 jours plus tard.
+async function sendGithubInvite(email, logPrefix) {
+  const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+  const GITHUB_ORG   = process.env.GITHUB_ORG || 'Riss-Group';
+  if (!GITHUB_TOKEN) return { invited: false };
+
+  try {
+    const ghRes = await fetch(`https://api.github.com/orgs/${encodeURIComponent(GITHUB_ORG)}/invitations`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${GITHUB_TOKEN}`,
+        'Accept': 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ email, role: 'direct_member', team_ids: [] }),
+    });
+    if (!ghRes.ok) {
+      const ghErr = await ghRes.json().catch(() => ({}));
+      logAction(`${logPrefix} ⚠️ GitHub : ${ghErr.message || ghRes.status}`);
+      return { invited: false };
+    }
+    logAction(`${logPrefix} ✅ Invitation GitHub envoyée à ${email}`);
+    const GITHUB_TEAM = process.env.GITHUB_TEAM_SLUG || 'all';
+    const teamRes = await fetch(`https://api.github.com/orgs/${encodeURIComponent(GITHUB_ORG)}/teams/${encodeURIComponent(GITHUB_TEAM)}/memberships/${encodeURIComponent(email)}`, {
+      method: 'PUT',
+      headers: {
+        'Authorization': `Bearer ${GITHUB_TOKEN}`,
+        'Accept': 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ role: 'member' }),
+    });
+    if (teamRes.ok) {
+      logAction(`${logPrefix} ✅ Ajouté au team GitHub "${GITHUB_TEAM}"`);
+    } else {
+      const teamErr = await teamRes.json().catch(() => ({}));
+      logAction(`${logPrefix} ⚠️ Team GitHub : ${teamErr.message || teamRes.status}`);
+    }
+    return { invited: true };
+  } catch (ghEx) {
+    logAction(`${logPrefix} ⚠️ GitHub inaccessible : ${ghEx.message}`);
+    return { invited: false };
+  }
+}
+
 async function assignPrimaryGroupAndSpComm({ adUser, groupId, groupName, jobRole, location, city, logPrefix }) {
   const { graphFetch } = require('./lib/graph');
   let skipped = false;
@@ -809,6 +902,7 @@ async function executeOnboardingBackground(id, adUserId, userPrincipalName, step
       excludeGroupId: onb.group_id,
     });
     await applySharePointCommGroups(spGroups, adUserId, userPrincipalName, `[${id}] [BG]`);
+    await applyGlobalSharedMailboxes(userPrincipalName, `[${id}] [BG]`, { retry: true });
     updateStep(db, id, 4, 'done');
     saveDB();
   } else {
@@ -816,47 +910,13 @@ async function executeOnboardingBackground(id, adUserId, userPrincipalName, step
     logAction(`[${id}] [BG] ⏭️ Groupes SP/Comm — étape désactivée dans le schéma`);
   }
 
-  // Étape 5 — Invitation GitHub
-  const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
-  const GITHUB_ORG   = process.env.GITHUB_ORG || 'Riss-Group';
-  if (GITHUB_TOKEN) {
+  // Étape 5 — Invitation GitHub (+ rappel automatique programmé 7 jours plus tard si succès)
+  if (process.env.GITHUB_TOKEN) {
     logAction(`[${id}] [BG] Invitation GitHub pour ${onb.employee_email}...`);
-    try {
-      const ghRes = await fetch(`https://api.github.com/orgs/${encodeURIComponent(GITHUB_ORG)}/invitations`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${GITHUB_TOKEN}`,
-          'Accept': 'application/vnd.github+json',
-          'X-GitHub-Api-Version': '2022-11-28',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ email: onb.employee_email, role: 'direct_member', team_ids: [] }),
-      });
-      if (ghRes.ok) {
-        logAction(`[${id}] [BG] ✅ Invitation GitHub envoyée à ${onb.employee_email}`);
-        const GITHUB_TEAM = process.env.GITHUB_TEAM_SLUG || 'all';
-        const teamRes = await fetch(`https://api.github.com/orgs/${encodeURIComponent(GITHUB_ORG)}/teams/${encodeURIComponent(GITHUB_TEAM)}/memberships/${encodeURIComponent(onb.employee_email)}`, {
-          method: 'PUT',
-          headers: {
-            'Authorization': `Bearer ${GITHUB_TOKEN}`,
-            'Accept': 'application/vnd.github+json',
-            'X-GitHub-Api-Version': '2022-11-28',
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ role: 'member' }),
-        });
-        if (teamRes.ok) {
-          logAction(`[${id}] [BG] ✅ Ajouté au team GitHub "${GITHUB_TEAM}"`);
-        } else {
-          const teamErr = await teamRes.json().catch(() => ({}));
-          logAction(`[${id}] [BG] ⚠️ Team GitHub : ${teamErr.message || teamRes.status}`);
-        }
-      } else {
-        const ghErr = await ghRes.json().catch(() => ({}));
-        logAction(`[${id}] [BG] ⚠️ GitHub : ${ghErr.message || ghRes.status}`);
-      }
-    } catch (ghEx) {
-      logAction(`[${id}] [BG] ⚠️ GitHub inaccessible : ${ghEx.message}`);
+    const { invited } = await sendGithubInvite(onb.employee_email, `[${id}] [BG]`);
+    if (invited) {
+      db.run(`UPDATE onboardings SET github_invited=1 WHERE id=?`, [id]);
+      saveDB();
     }
   } else {
     logAction(`[${id}] [BG] ⏭️ GITHUB_TOKEN non configuré — étape ignorée`);
@@ -1084,50 +1144,11 @@ app.post('/api/onboardings/manual', auth, requireRole('admin'), async (req, res)
     return res.status(e.httpStatus || 500).json({ error: e.message });
   }
 
+  // 3b. Boîtes partagées globales (permission Exchange)
+  await applyGlobalSharedMailboxes(email.trim(), '[manual]');
+
   // 4. GitHub invitation
-  let githubInvited = false;
-  const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
-  const GITHUB_ORG   = process.env.GITHUB_ORG || 'Riss-Group';
-  if (GITHUB_TOKEN) {
-    try {
-      const ghRes = await fetch(`https://api.github.com/orgs/${encodeURIComponent(GITHUB_ORG)}/invitations`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${GITHUB_TOKEN}`,
-          'Accept': 'application/vnd.github+json',
-          'X-GitHub-Api-Version': '2022-11-28',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ email: email.trim(), role: 'direct_member', team_ids: [] }),
-      });
-      if (ghRes.ok) {
-        githubInvited = true;
-        logAction(`[manual] ✅ Invitation GitHub envoyée à ${email}`);
-        const GITHUB_TEAM = process.env.GITHUB_TEAM_SLUG || 'all';
-        const teamRes = await fetch(`https://api.github.com/orgs/${encodeURIComponent(GITHUB_ORG)}/teams/${encodeURIComponent(GITHUB_TEAM)}/memberships/${encodeURIComponent(email.trim())}`, {
-          method: 'PUT',
-          headers: {
-            'Authorization': `Bearer ${GITHUB_TOKEN}`,
-            'Accept': 'application/vnd.github+json',
-            'X-GitHub-Api-Version': '2022-11-28',
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ role: 'member' }),
-        });
-        if (teamRes.ok) {
-          logAction(`[manual] ✅ Ajouté au team GitHub "${GITHUB_TEAM}"`);
-        } else {
-          const teamErr = await teamRes.json().catch(() => ({}));
-          logAction(`[manual] ⚠️ Team GitHub : ${teamErr.message || teamRes.status}`);
-        }
-      } else {
-        const ghErr = await ghRes.json().catch(() => ({}));
-        logAction(`[manual] ⚠️ GitHub : ${ghErr.message || ghRes.status}`);
-      }
-    } catch (ghEx) {
-      logAction(`[manual] ⚠️ GitHub inaccessible : ${ghEx.message}`);
-    }
-  }
+  const { invited: githubInvited } = await sendGithubInvite(email.trim(), '[manual]');
 
   return res.json({ ok: true, skipped, githubInvited, spGroupCount, displayName: adUser.displayName, groupName });
 });
@@ -1444,6 +1465,7 @@ app.get('/api/admin/settings', auth, requireRole('admin'), async (req, res) => {
     launch_password_set:           !!process.env.LAUNCH_PASSWORD,
     force_change_password:         dbMap.force_change_password         || process.env.FORCE_CHANGE_PASSWORD || 'true',
     sharepoint_global_groups:  JSON.parse(dbMap.sharepoint_global_groups  || process.env.SP_GLOBAL_GROUPS              || '[]'),
+    global_shared_mailboxes:   JSON.parse(dbMap.global_shared_mailboxes   || process.env.GLOBAL_SHARED_MAILBOXES       || '[]'),
     sharepoint_country_groups: JSON.parse(dbMap.sharepoint_country_groups || process.env.SP_COUNTRY_GROUPS             || '[]'),
     communication_groups:      JSON.parse(dbMap.communication_groups      || process.env.SP_COMMUNICATION_GROUPS       || '[]'),
     pointage_assignments:      JSON.parse(dbMap.pointage_assignments      || process.env.SP_POINTAGE_ASSIGNMENTS            || '[]'),
@@ -1477,6 +1499,13 @@ function validateSettingValue(key, v) {
         for (const f of ['name', 'label', 'location']) {
           if (g && typeof g[f] === 'string' && g[f].length > 256) return `champ "${f}" trop long`;
         }
+      }
+    }
+    if (key === 'global_shared_mailboxes') {
+      for (const m of v) {
+        if (!m || typeof m.email !== 'string' || m.email.length > 254 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(m.email))
+          return `adresse de boîte partagée invalide : ${String(m && m.email).slice(0, 60)}`;
+        if (typeof m.label === 'string' && m.label.length > 256) return 'champ "label" trop long';
       }
     }
     if (JSON.stringify(v).length > 256 * 1024) return 'payload trop volumineux';
@@ -2338,6 +2367,26 @@ async function recoverStaleOnboardings() {
   if (orphaned.length) console.log(`[startup] ${orphaned.length} onboarding(s) en attente relancé(s)`);
 }
 
+// Rappel d'invitation GitHub : renvoie une invitation 7 jours après la création, pour les
+// onboardings dont la première invitation a réussi mais qui n'ont pas encore reçu de rappel.
+// Basé sur la date en base (pas un setTimeout) pour survivre aux redémarrages du serveur.
+async function sendDueGithubReminders() {
+  if (MOCK_GRAPH || !process.env.GITHUB_TOKEN) return;
+  const db = await getDB();
+  const due = dbRows(db, `
+    SELECT id, employee_email FROM onboardings
+    WHERE github_invited=1 AND github_reminder_sent_at IS NULL AND is_mock=0
+      AND datetime(created_at, '+7 days') <= datetime('now')
+  `);
+  if (!due.length) return;
+  for (const { id, employee_email } of due) {
+    logAction(`[${id}] [github-reminder] Rappel d'invitation GitHub pour ${employee_email}...`);
+    await sendGithubInvite(employee_email, `[${id}] [github-reminder]`);
+    db.run(`UPDATE onboardings SET github_reminder_sent_at=datetime('now') WHERE id=?`, [id]);
+    saveDB();
+  }
+}
+
 async function loadSettingsFromDB() {
   const db = await getDB();
   const rows = dbRows(db, `SELECT key, value FROM settings WHERE key IN (${Object.keys(SETTINGS_MAP).map(() => '?').join(',')})`, Object.keys(SETTINGS_MAP));
@@ -2351,6 +2400,8 @@ getDB().then(async () => {
   await loadSettingsFromDB();
   await recoverStaleOnboardings();
   await ensureDefaultAdmin();
+  sendDueGithubReminders().catch(err => console.error('[github-reminder]', err));
+  setInterval(() => sendDueGithubReminders().catch(err => console.error('[github-reminder]', err)), 6 * 60 * 60 * 1000);
   app.listen(PORT, () => {
     console.log(`Onboarding M365 — backend sur http://localhost:${PORT}${MOCK_GRAPH ? ' [MOCK]' : ''}`);
   });

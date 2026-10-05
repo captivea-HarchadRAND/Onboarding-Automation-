@@ -118,6 +118,11 @@ function migrate(db) {
 
     // v6: tous les anciens enregistrements sont mock (créés avant la séparation)
     `UPDATE onboardings SET is_mock=1;`,
+
+    // v7: suivi de l'invitation GitHub, pour pouvoir envoyer un rappel automatique 7 jours
+    // après la création si la première invitation a réussi.
+    `ALTER TABLE onboardings ADD COLUMN github_invited INTEGER DEFAULT 0;
+     ALTER TABLE onboardings ADD COLUMN github_reminder_sent_at TEXT;`,
   ];
 
   for (let i = current; i < migrations.length; i++) {
