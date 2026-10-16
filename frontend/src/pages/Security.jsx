@@ -3,6 +3,7 @@
 
 import { useEffect, useState } from 'react';
 import { api } from '../api';
+import { useUser } from '../context/UserContext';
 
 function Icon({ path, size = 14, strokeWidth = 1.75 }) {
   return (
@@ -98,6 +99,7 @@ function Btn({ onClick, disabled, children, variant = 'ghost' }) {
 }
 
 export default function Security() {
+  const { isSuperAdmin } = useUser(); // effacer le journal : super admin uniquement (contrôlé aussi par le serveur)
   const [events,      setEvents]      = useState([]);
   const [loading,     setLoading]     = useState(true);
   const [lastRefresh, setLastRefresh] = useState(null);
@@ -218,7 +220,7 @@ export default function Security() {
             </Btn>
 
             {/* Delete selection */}
-            {nSel > 0 && (
+            {isSuperAdmin && nSel > 0 && (
               confirmSel ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <span style={{ fontSize: 11, color: 'var(--muted)' }}>
@@ -238,7 +240,7 @@ export default function Security() {
             )}
 
             {/* Delete all */}
-            {nSel === 0 && (
+            {isSuperAdmin && nSel === 0 && (
               confirmAll ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <span style={{ fontSize: 11, color: 'var(--muted)' }}>Tout effacer ?</span>

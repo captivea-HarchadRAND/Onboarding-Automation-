@@ -197,6 +197,10 @@ export default function Transfer() {
       .finally(() => setNewGroupsLoading(false));
   }, [form.jobRole, form.location, form.city, autoGroup]);
 
+  // Même règle que le serveur : un groupe géré par l'app est retiré, sauf s'il est le nouveau groupe principal ou
+  // un des groupes du nouveau poste/pays (alors il est conservé au lieu d'être retiré puis remis).
+  const willRemove = g => g.removable && g.id !== autoGroup?.id && !newGroupsPreview.some(n => n.id === g.id);
+
   async function handleLookup() {
     const email = form.email.trim();
     if (!email) return;
@@ -259,13 +263,40 @@ export default function Transfer() {
   const isGlobal = GLOBAL_ROLES.has(form.jobRole.trim());
 
   if (result) {
+    // Échecs renvoyés par le serveur : groupes dont la personne n'a pas pu être retirée, ou auxquels elle n'a pas pu être ajoutée.
+    const failedRemovals = result.failedRemovals || [];
+    const failedAdditions = result.failedAdditions || [];
+    const incomplete = failedRemovals.length + failedAdditions.length > 0;
+    const failList = (title, items) => items.length > 0 && (
+      <div style={{ marginBottom: 10 }}>
+        <p style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', margin: '0 0 4px' }}>{title}</p>
+        <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: 'var(--text2)', lineHeight: 1.6 }}>
+          {items.map((f, i) => <li key={i}><strong>{f.name}</strong>{f.error ? ` — ${f.error}` : ''}</li>)}
+        </ul>
+      </div>
+    );
     return (
       <div style={{ maxWidth: 560, margin: '0 auto', paddingTop: 40 }}>
         <div className="card" style={{ textAlign: 'center' }}>
-          <div style={{ width: 52, height: 52, borderRadius: '50%', background: 'rgba(34,197,94,.1)', border: '2px solid rgba(34,197,94,.3)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
-          </div>
-          <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 8, color: 'var(--text)' }}>Mutation effectuée</h2>
+          {incomplete ? (
+            <div style={{ width: 52, height: 52, borderRadius: '50%', background: 'rgba(245,158,11,.12)', border: '2px solid rgba(245,158,11,.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+            </div>
+          ) : (
+            <div style={{ width: 52, height: 52, borderRadius: '50%', background: 'rgba(34,197,94,.1)', border: '2px solid rgba(34,197,94,.3)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+            </div>
+          )}
+          <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 8, color: 'var(--text)' }}>{incomplete ? 'Mutation incomplète' : 'Mutation effectuée'}</h2>
+          {incomplete && (
+            <div role="alert" style={{ textAlign: 'left', background: 'rgba(245,158,11,.08)', border: '1px solid rgba(245,158,11,.3)', borderRadius: 8, padding: '12px 14px', margin: '0 0 16px' }}>
+              <p style={{ fontSize: 13, color: 'var(--text)', margin: '0 0 10px', lineHeight: 1.5 }}>
+                Microsoft a refusé certaines opérations. Vérifie ces groupes dans Microsoft 365 (ou relance la mutation) : la personne peut avoir gardé un ancien accès ou ne pas avoir reçu un nouveau.
+              </p>
+              {failList('Pas pu être retiré de :', failedRemovals)}
+              {failList('Pas pu être ajouté à :', failedAdditions)}
+            </div>
+          )}
           <p style={{ fontSize: 14, color: 'var(--text)', fontWeight: 600, marginBottom: 4 }}>
             {result.displayName || form.email}
           </p>
@@ -356,7 +387,7 @@ export default function Transfer() {
                 <p style={{ fontSize: 12, color: 'var(--muted)' }}>Aucun groupe (ou mode développement — Graph simulée).</p>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  {lookup.groups.map(g => (
+                  {lookup.groups.map(g => ({ ...g, removable: willRemove(g) })).map(g => (
                     <div key={g.id} style={{
                       display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
                       padding: '6px 10px', borderRadius: 6,

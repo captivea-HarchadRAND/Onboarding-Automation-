@@ -370,7 +370,9 @@ export default function Monitoring() {
   const cmp = compare && !!prevM;
   const allEmpty = !!data && TOOLS.every(t => data.tools[t.key].empty);
 
+  /* Pays du filtre : liste définie dans Administration > Pays (puis pays trouvés dans les rapports hors liste), fournie par le serveur. */
   const countries = useMemo(() => {
+    if (data?.countries?.length) return data.countries;
     const s = new Set();
     if (data) for (const t of TOOLS) for (const k of Object.keys(data.tools[t.key].cells)) s.add(k.slice(0, k.lastIndexOf('|')));
     return [...s].sort();

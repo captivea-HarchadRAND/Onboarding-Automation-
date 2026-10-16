@@ -1,6 +1,6 @@
 // [EN-TÊTE] App.jsx — routeur de l'application.
 //   <Guard> protège une route : connecté ; adminOnly = rôle admin ; superAdminOnly = super administrateur ; module = accès au module.
-//   Routes publiques : /login (connexion Microsoft, LoginSSO), /login/backup (mot de passe de secours, Login), /invite/:token (legacy).
+//   Routes publiques : /login (connexion Microsoft, LoginSSO), /login/backup (mot de passe de secours, Login).
 //   Dans <Layout> : / (Portail), /dashboard /new /new/manual /transfer /history /mailbox-access /admin /security /offboarding
 //   (module Onboarding), /monitoring et /monitoring/admin (module Monitoring), /portal-admin (super admin).
 //   Ajouter un module : l'inscrire dans modules.js + ses routes ici + les routes serveur protégées par requireModule.
@@ -10,7 +10,6 @@ import { UserProvider, useUser } from './context/UserContext';
 import Layout from './components/Layout';
 import Login from './pages/Login';
 import LoginSSO from './pages/LoginSSO';
-import AcceptInvite from './pages/AcceptInvite';
 import Dashboard from './pages/Dashboard';
 import NewOnboarding from './pages/NewOnboarding';
 import History from './pages/History';
@@ -43,7 +42,6 @@ function AppRoutes() {
     <Routes>
       <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginSSO />} />
       <Route path="/login/backup" element={user ? <Navigate to="/" replace /> : <Login />} />
-      <Route path="/invite/:token" element={user ? <Navigate to="/" replace /> : <AcceptInvite />} />
       <Route element={<Guard><Layout /></Guard>}>
         <Route index element={<Portal />} />
         <Route path="portal-admin" element={<Guard adminOnly superAdminOnly><PortalAdmin /></Guard>} />

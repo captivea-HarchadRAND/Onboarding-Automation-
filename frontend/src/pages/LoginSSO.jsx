@@ -1,5 +1,5 @@
 // [EN-TÊTE] LoginSSO.jsx — page de connexion normale (/login) : un bouton vers /api/auth/microsoft/login (navigation complète, pas
-// un appel XHR). Affiche l'erreur renvoyée par le serveur dans ?error=… (unauthorized, disabled, refused, invalid, failed, config).
+// un appel XHR). Affiche l'erreur renvoyée par le serveur dans ?error=… (unauthorized, disabled, refused, invalid, failed, config, guest, mismatch).
 
 import { useSearchParams } from 'react-router-dom';
 
@@ -12,6 +12,8 @@ const ERRORS = {
   invalid: 'La demande de connexion est invalide ou a expiré. Réessaie.',
   failed: 'La connexion Microsoft a échoué. Réessaie dans un instant.',
   config: "La connexion Microsoft n'est pas configurée sur ce serveur. Contacte un administrateur.",
+  guest: "Les comptes invités (externes à Captivea) ne peuvent pas se connecter. Utilise ton compte Microsoft Captivea.",
+  mismatch: "Cet accès est déjà relié à un autre compte Microsoft. Contacte un administrateur.",
 };
 
 function MicrosoftLogo() {

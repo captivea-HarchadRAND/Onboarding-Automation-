@@ -1,7 +1,7 @@
 // [EN-TÊTE] Offboarding.jsx — module Onboarding, administrateurs : départ d'un employé (/offboarding). POST /api/offboarding puis
 // sondage de GET /api/offboarding/:id. 8 étapes côté serveur (blocage du compte … révocation de la licence EN DERNIER).
-// État du travail gardé en MÉMOIRE du serveur. Le flux « script .bat + confirmation » (status manual / waitingForConfirmation)
-// n'est plus déclenché par le serveur : code probablement mort, à confirmer avant suppression.
+// État du travail gardé en MÉMOIRE du serveur. Les actions Exchange sont faites par le serveur lui-même (script /opt/scripts/exchange.ps1 du VPS) :
+// l'ancien flux « script .bat à télécharger + confirmation manuelle » a été supprimé.
 
 import { useState, useEffect, useRef } from 'react';
 import { api } from '../api';
@@ -30,10 +30,8 @@ const IC = {
   warn:      ['M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z', 'M12 9v4', 'M12 17h.01'],
   pause:     ['M6 4h4v16H6z', 'M14 4h4v16h-4z'],
   search:    ['M21 21l-6-6m2-5a7 7 0 1 1-14 0 7 7 0 0 1 14 0'],
-  copy:      ['M20 9h-9a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2z', 'M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1'],
   chevDown:  'M6 9l6 6 6-6',
   chevRight: 'M9 18l6-6-6-6',
-  download:  ['M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4', 'M7 10l5 5 5-5', 'M12 15V3'],
   arrowLeft: ['M19 12H5', 'M12 19l-7-7 7-7'],
   shield:    'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z',
   group:     ['M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2', 'M23 21v-2a4 4 0 0 0-3-3.87', 'M16 3.13a4 4 0 0 1 0 7.75', 'M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z'],
@@ -46,7 +44,6 @@ const STEP_CFG = {
   running: { icon: IC.clock, color: '#60a5fa', bg: 'rgba(96,165,250,.15)', border: 'rgba(96,165,250,.4)', label: 'En cours' },
   skipped: { icon: IC.skip,  color: '#94a3b8', bg: 'rgba(148,163,184,.1)', border: 'rgba(148,163,184,.3)', label: 'Ignoré' },
   pending: { icon: IC.pause, color: '#475569', bg: 'rgba(71,85,105,.1)',   border: 'rgba(71,85,105,.25)', label: 'En attente' },
-  manual:  { icon: IC.warn,  color: '#f59e0b', bg: 'rgba(245,158,11,.15)', border: 'rgba(245,158,11,.4)', label: 'Manuel' },
 };
 
 /* ── UserSearch ──────────────────────────────────────────────────── */
@@ -178,49 +175,6 @@ function UserSearch({ value, display, onSelect, placeholder, label, helpText, re
   );
 }
 
-/* ── CopyCommand ─────────────────────────────────────────────────── */
-function CopyCommand({ cmd }) {
-  const [copied, setCopied] = useState(false);
-  function copy() {
-    navigator.clipboard.writeText(cmd).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  }
-  return (
-    <div style={{
-      display: 'flex', alignItems: 'flex-start', gap: 8,
-      background: 'rgba(0,0,0,.4)', border: '1px solid rgba(245,158,11,.2)',
-      borderRadius: 7, padding: '8px 10px', marginTop: 6,
-    }}>
-      <code style={{
-        flex: 1, fontSize: 11, color: '#fcd34d',
-        wordBreak: 'break-all', fontFamily: 'monospace', lineHeight: 1.6,
-      }}>
-        {cmd}
-      </code>
-      <button
-        onClick={copy}
-        aria-label="Copier la commande"
-        style={{
-          flexShrink: 0, display: 'flex', alignItems: 'center', gap: 5,
-          background: copied ? 'rgba(34,197,94,.15)' : 'rgba(245,158,11,.1)',
-          border: `1px solid ${copied ? 'rgba(34,197,94,.35)' : 'rgba(245,158,11,.3)'}`,
-          borderRadius: 6, padding: '4px 8px', cursor: 'pointer',
-          fontSize: 11, fontWeight: 600, fontFamily: 'inherit',
-          color: copied ? '#22c55e' : '#f59e0b',
-          transition: 'all .15s', whiteSpace: 'nowrap',
-        }}
-        onFocus={e => { e.currentTarget.style.boxShadow = '0 0 0 2px var(--primary)'; }}
-        onBlur={e => { e.currentTarget.style.boxShadow = 'none'; }}
-      >
-        <Icon path={copied ? IC.check : IC.copy} size={12} strokeWidth={2} />
-        {copied ? 'Copié !' : 'Copier'}
-      </button>
-    </div>
-  );
-}
-
 /* ── GroupList ───────────────────────────────────────────────────── */
 function GroupList({ groups }) {
   const [open, setOpen] = useState(false);
@@ -322,15 +276,7 @@ function StepItem({ step, index, total, isLast }) {
           </span>
         </div>
 
-        {step.status === 'manual' ? (
-          <div style={{ marginTop: 6 }}>
-            <p style={{ fontSize: 11, color: '#f59e0b', margin: '0 0 4px', display: 'flex', alignItems: 'center', gap: 5 }}>
-              <Icon path={IC.warn} size={12} />
-              Action manuelle requise — Exchange Online PowerShell
-            </p>
-            <CopyCommand cmd={step.detail} />
-          </div>
-        ) : step.detail ? (
+        {step.detail ? (
           <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 3, lineHeight: 1.5 }}>
             {step.detail}
           </p>
@@ -347,7 +293,7 @@ function StepItem({ step, index, total, isLast }) {
 /* ── Progress counter badge ──────────────────────────────────────── */
 function ProgressBadge({ steps }) {
   if (!steps?.length) return null;
-  const done = steps.filter(s => s.status === 'done' || s.status === 'skipped' || s.status === 'manual').length;
+  const done = steps.filter(s => s.status === 'done' || s.status === 'skipped').length;
   const pct  = Math.round((done / steps.length) * 100);
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -378,8 +324,6 @@ export default function Offboarding() {
   const [submitting,  setSubmitting]  = useState(false);
   const [jobId,          setJobId]          = useState(null);
   const [job,            setJob]            = useState(null);
-  const [scriptChecked,  setScriptChecked]  = useState(false);
-  const [confirmingScript, setConfirmingScript] = useState(false);
   const pollRef = useRef(null);
 
   useEffect(() => {
@@ -418,19 +362,9 @@ export default function Offboarding() {
     } finally { setSubmitting(false); }
   }
 
-  async function confirmScript() {
-    setConfirmingScript(true);
-    try {
-      await api.post(`/api/offboarding/${jobId}/confirm`, {});
-      setScriptChecked(false);
-    } catch (err) {
-      setError(err.message || 'Erreur lors de la confirmation');
-    } finally { setConfirmingScript(false); }
-  }
-
   function reset() {
     clearInterval(pollRef.current);
-    setJobId(null); setJob(null); setScriptChecked(false); setConfirmingScript(false);
+    setJobId(null); setJob(null);
     setForm({ targetEmail: '', targetDisplay: '', accessTo: '', accessToDisplay: '', transferEmails: false });
     setConfirming(false); setError('');
   }
@@ -441,7 +375,6 @@ export default function Offboarding() {
   if (jobId) {
     const isDone   = job?.status === 'done';
     const isFailed = job?.status === 'failed';
-    const hasManual = job?.steps?.some(s => s.status === 'manual');
     const steps = job?.steps || [];
 
     const stepsWithGroups = steps.map(s =>
@@ -496,7 +429,7 @@ export default function Offboarding() {
                 fontSize: 13, fontWeight: 600,
                 color: isDone ? '#22c55e' : isFailed ? '#ef4444' : '#60a5fa',
               }}>
-                {isDone ? (hasManual ? 'Complété — actions manuelles requises' : 'Offboarding terminé') : isFailed ? 'Erreur lors de l\'offboarding' : 'Offboarding en cours…'}
+                {isDone ? 'Offboarding terminé' : isFailed ? 'Erreur lors de l\'offboarding' : 'Offboarding en cours…'}
               </span>
             </div>
             <ProgressBadge steps={steps} />
@@ -515,109 +448,24 @@ export default function Offboarding() {
             ))}
           </div>
 
-          {/* Confirmation script Exchange */}
-          {job?.status === 'waitingForConfirmation' && (
-            <div style={{ padding: '0 20px 20px' }}>
-              <div style={{
-                padding: '16px 18px',
-                background: 'rgba(245,158,11,.05)',
-                border: '1px solid rgba(245,158,11,.3)',
-                borderLeft: '3px solid #f59e0b',
-                borderRadius: 9,
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 10 }}>
-                  <span style={{ color: '#f59e0b', display: 'flex' }}>
-                    <Icon path={IC.warn} size={15} strokeWidth={2} />
-                  </span>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: '#f59e0b' }}>
-                    Action manuelle requise avant de continuer
-                  </span>
-                </div>
-                <p style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 14, lineHeight: 1.6 }}>
-                  Téléchargez et exécutez le script Exchange (.bat) pour convertir la boîte en partagée et configurer les accès. La révocation de licence ne sera effectuée qu'après votre confirmation.
-                </p>
-                <a
-                  href={`/api/offboarding/${jobId}/script`}
-                  download
-                  style={{
-                    display: 'inline-flex', alignItems: 'center', gap: 6,
-                    padding: '7px 12px', borderRadius: 7, textDecoration: 'none',
-                    border: '1px solid rgba(245,158,11,.35)',
-                    background: 'rgba(245,158,11,.08)', color: '#f59e0b',
-                    fontSize: 12, fontWeight: 600, marginBottom: 16,
-                    transition: 'background var(--transition)',
-                  }}
-                  onMouseEnter={e => { e.currentTarget.style.background = 'rgba(245,158,11,.15)'; }}
-                  onMouseLeave={e => { e.currentTarget.style.background = 'rgba(245,158,11,.08)'; }}
-                >
-                  <Icon path={IC.download} size={13} />
-                  Télécharger le script (.bat)
-                </a>
-                <label style={{
-                  display: 'flex', alignItems: 'flex-start', gap: 10,
-                  padding: '10px 12px', borderRadius: 8, cursor: 'pointer', marginBottom: 14,
-                  background: scriptChecked ? 'rgba(34,197,94,.06)' : 'var(--surface2)',
-                  border: `1px solid ${scriptChecked ? 'rgba(34,197,94,.3)' : 'var(--border)'}`,
-                  transition: 'border-color var(--transition), background var(--transition)',
-                }}>
-                  <input
-                    type="checkbox"
-                    checked={scriptChecked}
-                    onChange={e => setScriptChecked(e.target.checked)}
-                    style={{ marginTop: 1, accentColor: '#22c55e', width: 15, height: 15, flexShrink: 0, cursor: 'pointer' }}
-                  />
-                  <span style={{ fontSize: 12, color: scriptChecked ? '#22c55e' : 'var(--muted)', lineHeight: 1.5, transition: 'color var(--transition)' }}>
-                    J'ai exécuté le script Exchange avec succès — la boîte est convertie et les accès sont configurés
-                  </span>
-                </label>
-                <button
-                  onClick={confirmScript}
-                  disabled={!scriptChecked || confirmingScript}
-                  style={{
-                    display: 'inline-flex', alignItems: 'center', gap: 7,
-                    padding: '9px 18px', borderRadius: 8, border: 'none',
-                    background: scriptChecked && !confirmingScript ? '#22c55e' : 'rgba(34,197,94,.25)',
-                    color: scriptChecked && !confirmingScript ? '#fff' : 'rgba(34,197,94,.5)',
-                    cursor: scriptChecked && !confirmingScript ? 'pointer' : 'not-allowed',
-                    fontSize: 13, fontWeight: 700, fontFamily: 'inherit',
-                    transition: 'background var(--transition), color var(--transition)',
-                  }}
-                  onMouseEnter={e => { if (scriptChecked && !confirmingScript) e.currentTarget.style.background = '#16a34a'; }}
-                  onMouseLeave={e => { if (scriptChecked && !confirmingScript) e.currentTarget.style.background = '#22c55e'; }}
-                  onFocus={e => { e.currentTarget.style.boxShadow = '0 0 0 3px rgba(34,197,94,.3)'; }}
-                  onBlur={e => { e.currentTarget.style.boxShadow = 'none'; }}
-                >
-                  {confirmingScript
-                    ? <><span className="spinner" style={{ width: 13, height: 13 }} /> Confirmation…</>
-                    : <><Icon path={IC.check} size={14} strokeWidth={2.5} /> Confirmer et révoquer la licence</>}
-                </button>
-              </div>
-            </div>
-          )}
-
           {/* Summary */}
           {(isDone || isFailed) && (
             <div style={{ padding: '0 20px 20px' }}>
               <div style={{
                 marginTop: 12,
                 padding: '14px 16px',
-                background: isDone
-                  ? (hasManual ? 'rgba(245,158,11,.06)' : 'rgba(34,197,94,.07)')
-                  : 'rgba(239,68,68,.07)',
-                border: `1px solid ${isDone ? (hasManual ? 'rgba(245,158,11,.25)' : 'rgba(34,197,94,.2)') : 'rgba(239,68,68,.2)'}`,
+                background: isDone ? 'rgba(34,197,94,.07)' : 'rgba(239,68,68,.07)',
+                border: `1px solid ${isDone ? 'rgba(34,197,94,.2)' : 'rgba(239,68,68,.2)'}`,
                 borderRadius: 9,
-                borderLeft: `3px solid ${isDone ? (hasManual ? '#f59e0b' : '#22c55e') : '#ef4444'}`,
+                borderLeft: `3px solid ${isDone ? '#22c55e' : '#ef4444'}`,
               }}>
                 {isDone ? (
                   <>
-                    <p style={{ fontSize: 13, fontWeight: 600, color: hasManual ? '#f59e0b' : '#22c55e', marginBottom: 6 }}>
-                      {hasManual ? 'Actions manuelles requises' : 'Offboarding complété'}
-                    </p>
+                    <p style={{ fontSize: 13, fontWeight: 600, color: '#22c55e', marginBottom: 6 }}>Offboarding complété</p>
                     <ul style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.7, paddingLeft: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 3 }}>
                       <li>· Compte <strong style={{ color: 'var(--text2)' }}>{job.targetEmail}</strong> désactivé et converti en boîte partagée</li>
                       {job.accessTo && <li>· <strong style={{ color: 'var(--text2)' }}>{job.accessTo}</strong> a l'accès complet à la boîte</li>}
                       {job.transferEmails && job.accessTo && <li>· Transfert des nouveaux emails activé (copie conservée)</li>}
-                      {hasManual && <li style={{ color: '#f59e0b' }}>· Les commandes Exchange Online doivent être exécutées manuellement</li>}
                     </ul>
                   </>
                 ) : (
@@ -630,25 +478,6 @@ export default function Offboarding() {
 
               {/* Actions */}
               <div style={{ display: 'flex', gap: 8, marginTop: 14, flexWrap: 'wrap' }}>
-                {hasManual && (
-                  <a
-                    href={`/api/offboarding/${jobId}/script`}
-                    download
-                    style={{
-                      display: 'inline-flex', alignItems: 'center', gap: 6,
-                      padding: '8px 14px', borderRadius: 7, textDecoration: 'none',
-                      border: '1px solid rgba(245,158,11,.35)',
-                      background: 'rgba(245,158,11,.08)', color: '#f59e0b',
-                      fontSize: 12, fontWeight: 600,
-                      transition: 'background var(--transition)',
-                    }}
-                    onMouseEnter={e => { e.currentTarget.style.background = 'rgba(245,158,11,.15)'; }}
-                    onMouseLeave={e => { e.currentTarget.style.background = 'rgba(245,158,11,.08)'; }}
-                  >
-                    <Icon path={IC.download} size={13} />
-                    Télécharger le script (.bat)
-                  </a>
-                )}
                 <button
                   onClick={reset}
                   style={{

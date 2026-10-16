@@ -1,6 +1,6 @@
 // [EN-TÊTE] MonitoringAdmin.jsx — module Monitoring : Administration (/monitoring/admin), administrateurs avec le module.
 // Onglet « Source des documents » : chemins des 3 rapports Excel dans SharePoint (PUT /api/monitoring/ai-usage/sharepoint-settings ;
-// le drive se règle dans le .env : MONITORING_SP_DRIVE_ID) + « Enregistrer et synchroniser ». Onglet « Prix » : prix mensuel par outil (Claude : un prix par siège, Premium et Standard)
+// le drive se règle dans le .env : MONITORING_SP_DRIVE_ID) + « Enregistrer et synchroniser ». Onglet « Pays » : pays du filtre et autres écritures (PUT /api/monitoring/ai-usage/countries). Onglet « Prix » : prix mensuel par outil (Claude : un prix par siège, Premium et Standard)
 // (PUT /api/monitoring/ai-usage/prices).
 
 import { useEffect, useState } from 'react';
@@ -12,6 +12,7 @@ const PRICE_NOTE = "Sert à calculer le coût des licences inactives. Les licenc
 
 const SECTIONS = [
   { value: 'source', label: 'Source des documents', icon: ['M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z'] },
+  { value: 'countries', label: 'Pays', icon: ['M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z', 'M2 12h20', 'M12 2a15 15 0 0 1 0 20', 'M12 2a15 15 0 0 0 0 20'] },
   { value: 'prices', label: 'Prix', icon: ['M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z', 'M7 7h.01'] },
 ];
 
@@ -38,6 +39,8 @@ export default function MonitoringAdmin() {
   const [spForm, setSpForm] = useState({ claude: '', chatgpt: '', fireflies: '' });
   const [spMsg, setSpMsg] = useState(null);
   const [spBusy, setSpBusy] = useState(false);
+  const [countryForm, setCountryForm] = useState([]);
+  const [countryMsg, setCountryMsg] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -47,6 +50,7 @@ export default function MonitoringAdmin() {
       .then(d => {
         if (cancelled) return;
         setData(d); setPrices(d.prices);
+        setCountryForm((d.countryList || []).map(c => ({ name: c.name, aliases: c.aliases.join(', ') })));
         const saved = d.sharepoint?.settings?.saved;
         if (saved) setSpForm({ claude: saved.paths.claude || '', chatgpt: saved.paths.chatgpt || '', fireflies: saved.paths.fireflies || '' });
       })
@@ -86,6 +90,80 @@ export default function MonitoringAdmin() {
     } catch (e) {
       setPriceMsg({ ok: false, text: e.message });
     }
+  }
+
+  async function saveCountries() {
+    setCountryMsg(null);
+    try {
+      await api.put('/api/monitoring/ai-usage/countries', {
+        countries: countryForm.map(c => ({ name: c.name, aliases: c.aliases.split(',').map(s => s.trim()).filter(Boolean) })),
+      });
+      setCountryMsg({ ok: true, text: 'Liste des pays enregistrée.' });
+      setReloadKey(k => k + 1);
+    } catch (e) {
+      setCountryMsg({ ok: false, text: e.message });
+    }
+  }
+
+  /* ── Pays proposés dans le filtre du tableau de bord ── */
+  function renderCountries() {
+    const setRow = (i, patch) => setCountryForm(rows => rows.map((r, k) => (k === i ? { ...r, ...patch } : r)));
+    const listed = new Set(countryForm.map(c => c.name.trim().toLowerCase()));
+    const unlisted = (data.unlistedCountries || []).filter(c => !listed.has(c.toLowerCase()));
+    return (
+      <div className="card" style={{ maxWidth: 760, padding: 18 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+          <h2 style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', margin: 0 }}>Pays du tableau de bord</h2>
+          <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 10px', borderRadius: 999, color: data.countriesSaved ? LEVELS.vert.color : 'var(--muted)', background: data.countriesSaved ? LEVELS.vert.bg : 'var(--surface2)', border: '1px solid var(--border)' }}>
+            {data.countriesSaved ? 'enregistrés' : 'liste par défaut'}
+          </span>
+        </div>
+        <p style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.6, margin: '6px 0 16px' }}>
+          Pays proposés dans le filtre « Pays » du Monitoring, dans cet ordre, même sans licence ce mois-ci. Le nom doit correspondre à la colonne « Pays » des rapports ; « Autres noms » rattache d'autres écritures au même pays (ex. « France » → « Captivea France »), sans tenir compte des majuscules ni des accents.
+        </p>
+        <div style={{ display: 'grid', gap: 12 }}>
+          {countryForm.map((c, i) => (
+            <div key={i} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1.4fr) auto', gap: 10, alignItems: 'end' }}>
+              <div>
+                <label htmlFor={`ct-name-${i}`}>Nom affiché</label>
+                <input id={`ct-name-${i}`} value={c.name} onChange={e => setRow(i, { name: e.target.value })} placeholder="Captivea France" autoComplete="off" maxLength={64} />
+              </div>
+              <div>
+                <label htmlFor={`ct-alias-${i}`}>Autres noms (séparés par des virgules)</label>
+                <input id={`ct-alias-${i}`} value={c.aliases} onChange={e => setRow(i, { aliases: e.target.value })} placeholder="France" autoComplete="off" />
+              </div>
+              <button type="button" className="btn btn-ghost" aria-label={`Retirer ${c.name || 'ce pays'}`} title="Retirer"
+                onClick={() => setCountryForm(rows => rows.filter((_, k) => k !== i))} style={{ minHeight: 38 }}>
+                <Icon path={['M3 6h18', 'M8 6V4h8v2', 'M19 6l-1 14H6L5 6']} size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+        <button type="button" className="btn btn-ghost" style={{ marginTop: 12 }} disabled={countryForm.length >= 30}
+          onClick={() => setCountryForm(rows => [...rows, { name: '', aliases: '' }])}>
+          <Icon path={['M12 5v14', 'M5 12h14']} size={13} /> Ajouter un pays
+        </button>
+        {unlisted.length > 0 && (
+          <div style={{ marginTop: 16, padding: '12px 14px', borderRadius: 10, background: LEVELS.jaune.bg, border: `1px solid ${LEVELS.jaune.border}` }}>
+            <p style={{ fontSize: 12, color: 'var(--text)', margin: '0 0 8px', lineHeight: 1.6 }}>
+              Trouvés dans les rapports mais absents de la liste (ils restent affichés à la fin du filtre) :
+            </p>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {unlisted.map(u => (
+                <button key={u} type="button" className="btn btn-ghost" style={{ fontSize: 12, padding: '4px 10px', minHeight: 30 }}
+                  onClick={() => setCountryForm(rows => [...rows, { name: u, aliases: '' }])}>
+                  <Icon path={['M12 5v14', 'M5 12h14']} size={12} /> Ajouter « {u} »
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 18 }}>
+          <button type="button" className="btn btn-primary" onClick={saveCountries}>Enregistrer</button>
+          {countryMsg && <span role={countryMsg.ok ? 'status' : 'alert'} style={{ fontSize: 12, fontWeight: 600, color: countryMsg.ok ? LEVELS.vert.color : LEVELS.rouge.color }}>{countryMsg.text}</span>}
+        </div>
+      </div>
+    );
   }
 
   /* ── Paramètres : emplacement des rapports SharePoint ── */
@@ -199,7 +277,7 @@ export default function MonitoringAdmin() {
             })}
           </div>
           <div role="tabpanel" id={`panel-${section}`} aria-labelledby={`tab-${section}`}>
-            {section === 'source' ? renderSettings() : renderPrices()}
+            {section === 'source' ? renderSettings() : section === 'countries' ? renderCountries() : renderPrices()}
           </div>
         </>
       )}

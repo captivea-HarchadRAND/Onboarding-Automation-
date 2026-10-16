@@ -23,7 +23,6 @@ function TabAPI() {
     api.get('/api/admin/settings').then(data => {
       setSettings(data);
       setForm({
-        azure_client_id:  data.azure_client_id  || '',
         default_domain:   data.default_domain   || '',
       });
     }).catch(e => setError(e.message));
@@ -71,8 +70,11 @@ function TabAPI() {
         </div>
 
         <div className="form-group">
-          <label>Client ID</label>
-          <input placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" {...field('azure_client_id')} />
+          <label htmlFor="azure-client-id">Client ID</label>
+          <input id="azure-client-id" value={settings.azure_client_id || 'Non défini'} readOnly aria-describedby="azure-env-hint" style={{ color: 'var(--muted)' }} />
+          <span id="azure-env-hint" style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4, display: 'block' }}>
+            Lecture seule : l'identifiant de l'application, le tenant et le secret se règlent uniquement dans le fichier <code>.env</code> du serveur (<code>AZURE_CLIENT_ID</code>, <code>AZURE_TENANT_ID</code>, <code>AZURE_CLIENT_SECRET</code>).
+          </span>
         </div>
         <div className="form-group">
           <label>Client Secret</label>

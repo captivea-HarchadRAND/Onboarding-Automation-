@@ -1,8 +1,9 @@
-// [EN-TÊTE] History.jsx — module Onboarding : liste des onboardings avec recherche et filtre par statut, actualisation silencieuse tant
-// qu'un onboarding est en cours (running/partial), suppression définitive réservée au super administrateur.
+// [EN-TÊTE] History.jsx — module Onboarding : historique des onboardings ET des offboardings (sélecteur de type, réservé aux administrateurs
+// pour les offboardings : GET /api/offboardings). Recherche et filtre par statut, actualisation silencieuse tant qu'un traitement est en cours
+// (running/partial), suppression définitive réservée au super administrateur.
 // Statuts : pending (En attente), running (En cours), partial (Finalisation), done (Terminé), failed (Échoué).
 
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api';
 import { useUser } from '../context/UserContext';
@@ -94,8 +95,127 @@ function Btn({ onClick, disabled, children, variant = 'ghost', style }) {
   );
 }
 
+// Tableau des offboardings : une ligne par départ, détail des étapes et des groupes retirés dépliable.
+const STEP_CFG = {
+  done:    { label: 'Terminé',    color: '#22c55e' },
+  failed:  { label: 'Échoué',     color: '#ef4444' },
+  running: { label: 'En cours',   color: '#60a5fa' },
+  skipped: { label: 'Ignoré',     color: '#94a3b8' },
+  pending: { label: 'En attente', color: '#94a3b8' },
+};
+const fmtDate = d => {
+  if (!d) return '—';
+  const dt = new Date(String(d).includes('T') ? d : String(d).replace(' ', 'T') + 'Z');
+  return isNaN(dt) ? String(d) : dt.toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+};
+
+function OffboardingTable({ rows, expanded, setExpanded, isSuperAdmin, onDelete }) {
+  const cell = (last) => ({ padding: '12px 14px', borderBottom: last ? 'none' : '1px solid var(--border)', verticalAlign: 'top' });
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead>
+          <tr>
+            {['Employé', 'Email M365', 'Accès donné à', 'Groupes retirés', 'Statut', 'Lancé par', 'Date', ''].map((h, i) => (
+              <th key={i} style={{
+                textAlign: 'left', padding: '10px 14px', fontSize: 10, fontWeight: 700, letterSpacing: '.5px',
+                textTransform: 'uppercase', color: 'var(--muted)', borderBottom: '1px solid var(--border)',
+                background: 'rgba(255,255,255,.015)', whiteSpace: 'nowrap',
+              }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((o, idx) => {
+            const last = idx === rows.length - 1;
+            const open = expanded === o.id;
+            return (
+              <Fragment key={o.id}>
+                <tr>
+                  <td style={cell(last && !open)}><div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text)' }}>{o.target_name || '—'}</div></td>
+                  <td style={cell(last && !open)}><span style={{ fontSize: 11, color: 'var(--muted)', fontFamily: 'monospace' }}>{o.target_email}</span></td>
+                  <td style={cell(last && !open)}>
+                    <span style={{ fontSize: 12, color: 'var(--text2)' }}>{o.access_to || '—'}</span>
+                    {o.access_to && o.transfer_emails && <div style={{ fontSize: 10, color: 'var(--muted)' }}>+ transfert des emails</div>}
+                  </td>
+                  <td style={cell(last && !open)}><span style={{ fontSize: 12, color: 'var(--muted)' }}>{o.removed_groups.length}</span></td>
+                  <td style={cell(last && !open)}><StatusBadge status={o.status} /></td>
+                  <td style={cell(last && !open)}><span style={{ fontSize: 12, color: 'var(--muted)' }}>{o.initiated_by_name || o.initiated_by || '—'}</span></td>
+                  <td style={{ ...cell(last && !open), whiteSpace: 'nowrap' }}><span style={{ fontSize: 11, color: 'var(--muted)' }}>{fmtDate(o.created_at)}</span></td>
+                  <td style={cell(last && !open)}>
+                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      <button type="button" aria-expanded={open} onClick={() => setExpanded(open ? null : o.id)}
+                        style={{
+                          display: 'inline-flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 6,
+                          border: '1px solid var(--border)', background: open ? 'var(--surface3)' : 'transparent',
+                          color: open ? 'var(--text)' : 'var(--muted)', cursor: 'pointer', fontSize: 11, fontFamily: 'inherit',
+                        }}
+                        onFocus={e => { e.currentTarget.style.boxShadow = '0 0 0 2px var(--primary)'; }}
+                        onBlur={e => { e.currentTarget.style.boxShadow = 'none'; }}>
+                        <Icon path={IC.eye} size={12} />{open ? 'Masquer' : 'Détails'}
+                      </button>
+                      {isSuperAdmin && (
+                        <button type="button" title="Supprimer définitivement cette entrée d'historique" aria-label="Supprimer cette entrée d'historique" onClick={() => onDelete(o)}
+                          style={{
+                            display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, width: 30, height: 30, borderRadius: 6,
+                            border: '1px solid rgba(239,68,68,.45)', background: 'rgba(239,68,68,.12)', color: '#f87171', cursor: 'pointer',
+                          }}>
+                          <Icon path={IC.trash} size={16} strokeWidth={2.25} />
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+                {open && (
+                  <tr>
+                    <td colSpan={8} style={{ padding: '4px 14px 16px', borderBottom: last ? 'none' : '1px solid var(--border)', background: 'rgba(255,255,255,.015)' }}>
+                      {o.error && <div className="error-box" role="alert" style={{ margin: '8px 0', fontSize: 12 }}>{o.error}</div>}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16, marginTop: 8 }}>
+                        <div>
+                          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.5px', textTransform: 'uppercase', color: 'var(--muted)', marginBottom: 6 }}>Étapes</div>
+                          {o.steps.length === 0 ? <span style={{ fontSize: 12, color: 'var(--muted)' }}>Aucune étape enregistrée.</span> : (
+                            <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 5 }}>
+                              {o.steps.map((st, i) => {
+                                const c = STEP_CFG[st.status] || STEP_CFG.pending;
+                                return (
+                                  <li key={i} style={{ fontSize: 12, color: 'var(--text2)', lineHeight: 1.4 }}>
+                                    <span style={{ color: c.color, fontWeight: 700, marginRight: 8 }}>{c.label}</span>
+                                    {st.name}
+                                    {st.detail && <span style={{ color: 'var(--muted)' }}> — {st.detail}</span>}
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          )}
+                        </div>
+                        <div>
+                          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.5px', textTransform: 'uppercase', color: 'var(--muted)', marginBottom: 6 }}>Groupes retirés ({o.removed_groups.length})</div>
+                          {o.removed_groups.length === 0 ? <span style={{ fontSize: 12, color: 'var(--muted)' }}>Aucun.</span> : (
+                            <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, color: 'var(--text2)', lineHeight: 1.6 }}>
+                              {o.removed_groups.map((g, i) => <li key={i}>{g}</li>)}
+                            </ul>
+                          )}
+                          {o.completed_at && <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 10 }}>Terminé le {fmtDate(o.completed_at)}</div>}
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export default function History() {
-  const { isSuperAdmin } = useUser();
+  const { user, isSuperAdmin } = useUser();
+  const isAdmin = user?.role === 'admin';
+  const [kind, setKind]               = useState('onboarding'); // 'onboarding' | 'offboarding' (offboardings : admins seulement)
+  const [expanded, setExpanded]       = useState(null);         // offboarding dont le détail des étapes est déplié
+  const isOff = kind === 'offboarding';
   const [onboardings, setOnboardings] = useState([]);
   const [loading, setLoading]         = useState(true);
   const [filter, setFilter]           = useState('');
@@ -115,7 +235,7 @@ export default function History() {
     setDeleting(true);
     setDeleteError('');
     try {
-      await api.delete(`/api/onboardings/${deleteTarget.id}`);
+      await api.delete(`/api/${isOff ? 'offboardings' : 'onboardings'}/${deleteTarget.id}`);
       setOnboardings(prev => prev.filter(x => x.id !== deleteTarget.id));
       setDeleteTarget(null);
     } catch (err) {
@@ -129,12 +249,15 @@ export default function History() {
   function load(silent = false) {
     if (!silent) setLoading(true);
     const qs = filter ? `?status=${filter}` : '';
-    api.get(`/api/onboardings${qs}`)
+    api.get(`/api/${isOff ? 'offboardings' : 'onboardings'}${qs}`)
       .then(data => { setOnboardings(data); setLoading(false); })
       .catch(() => setLoading(false));
   }
 
-  useEffect(() => { load(); }, [filter]);
+  useEffect(() => { load(); }, [filter, kind]);
+
+  // changer de type : repartir d'une liste propre (autres champs, autres statuts)
+  function switchKind(k) { if (k === kind) return; setOnboardings([]); setFilter(''); setSearch(''); setExpanded(null); setKind(k); }
 
   useEffect(() => {
     const hasRunning = onboardings.some(o => o.status === 'running' || o.status === 'pending' || o.status === 'partial');
@@ -146,6 +269,7 @@ export default function History() {
   const visible = onboardings.filter(o => {
     if (!search) return true;
     const q = search.toLowerCase();
+    if (isOff) return o.target_name?.toLowerCase().includes(q) || o.target_email?.toLowerCase().includes(q) || o.access_to?.toLowerCase().includes(q);
     return (
       o.employee_firstname?.toLowerCase().includes(q) ||
       o.employee_lastname?.toLowerCase().includes(q) ||
@@ -181,7 +305,7 @@ export default function History() {
               background: 'linear-gradient(to bottom, #ffffff 35%, rgba(255,255,255,.4))',
               WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
             }}>
-              Onboardings
+              {isOff ? 'Offboardings' : 'Onboardings'}
             </h1>
             <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>
               {onboardings.length} au total
@@ -189,14 +313,34 @@ export default function History() {
               {counts.failed  > 0 && <> · <span style={{ color: '#ef4444', fontWeight: 600 }}>{counts.failed} échoués</span></>}
             </p>
           </div>
-          <Link to="/new" style={{ textDecoration: 'none' }}>
+          <Link to={isOff ? '/offboarding' : '/new'} style={{ textDecoration: 'none' }}>
             <Btn variant="primary">
               <Icon path={IC.rocket} size={13} />
-              Nouvel onboarding
+              {isOff ? 'Nouvel offboarding' : 'Nouvel onboarding'}
             </Btn>
           </Link>
         </div>
       </div>
+
+      {/* Type d'historique : les offboardings sont réservés aux administrateurs */}
+      {isAdmin && (
+        <div role="tablist" aria-label="Type d'historique" style={{ display: 'inline-flex', gap: 4, padding: 3, marginBottom: 16, borderRadius: 10, border: '1px solid var(--border)', background: 'var(--surface2)' }}>
+          {[['onboarding', 'Onboardings'], ['offboarding', 'Offboardings']].map(([k, label]) => {
+            const on = kind === k;
+            return (
+              <button key={k} type="button" role="tab" aria-selected={on} onClick={() => switchKind(k)}
+                style={{
+                  padding: '6px 16px', borderRadius: 8, border: 'none', cursor: 'pointer', fontFamily: 'inherit',
+                  fontSize: 13, fontWeight: on ? 700 : 500,
+                  background: on ? 'var(--primary)' : 'transparent', color: on ? '#fff' : 'var(--muted)',
+                }}
+                onFocus={e => { e.currentTarget.style.boxShadow = '0 0 0 2px var(--primary)'; }}
+                onBlur={e => { e.currentTarget.style.boxShadow = 'none'; }}
+              >{label}</button>
+            );
+          })}
+        </div>
+      )}
 
       {/* Filter bar */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -209,7 +353,7 @@ export default function History() {
             <Icon path={IC.search} size={13} />
           </span>
           <input
-            placeholder="Rechercher un employé…"
+            placeholder={isOff ? 'Rechercher un employé ou un email…' : 'Rechercher un employé…'}
             value={search}
             onChange={e => setSearch(e.target.value)}
             onFocus={() => setFocusSearch(true)}
@@ -232,7 +376,7 @@ export default function History() {
             { value: 'done',        label: 'Terminés',   color: '#22c55e' },
             { value: 'running',     label: 'En cours',   color: '#60a5fa' },
             { value: 'failed',      label: 'Échoués',    color: '#ef4444' },
-            { value: 'pending',     label: 'En attente', color: '#94a3b8' },
+            ...(isOff ? [] : [{ value: 'pending', label: 'En attente', color: '#94a3b8' }]),
           ].map(opt => {
             const active = filter === opt.value;
             const count  = opt.value ? counts[opt.value] : onboardings.length;
@@ -297,15 +441,17 @@ export default function History() {
               <Icon path={IC.list} size={22} strokeWidth={1.5} />
             </div>
             <p style={{ fontSize: 13, color: 'var(--muted)', margin: 0 }}>
-              {search ? `Aucun résultat pour "${search}"` : 'Aucun onboarding trouvé'}
+              {search ? `Aucun résultat pour "${search}"` : (isOff ? 'Aucun offboarding trouvé' : 'Aucun onboarding trouvé')}
             </p>
-            <Link to="/new" style={{ textDecoration: 'none' }}>
+            <Link to={isOff ? '/offboarding' : '/new'} style={{ textDecoration: 'none' }}>
               <Btn variant="primary">
                 <Icon path={IC.rocket} size={13} />
-                Démarrer un onboarding
+                {isOff ? 'Démarrer un offboarding' : 'Démarrer un onboarding'}
               </Btn>
             </Link>
           </div>
+        ) : isOff ? (
+          <OffboardingTable rows={visible} expanded={expanded} setExpanded={setExpanded} isSuperAdmin={isSuperAdmin} onDelete={handleDelete} />
         ) : (
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -434,11 +580,11 @@ export default function History() {
             </div>
 
             <p style={{ fontSize: 13, color: 'var(--text2)', lineHeight: 1.5, marginBottom: 4 }}>
-              L'entrée de <strong style={{ color: 'var(--text)' }}>{deleteTarget.employee_firstname} {deleteTarget.employee_lastname}</strong>
-              {' '}(<span style={{ fontFamily: 'monospace', fontSize: 12 }}>{deleteTarget.employee_email}</span>) sera supprimée définitivement de l'historique.
+              L'entrée de <strong style={{ color: 'var(--text)' }}>{isOff ? (deleteTarget.target_name || deleteTarget.target_email) : `${deleteTarget.employee_firstname} ${deleteTarget.employee_lastname}`}</strong>
+              {' '}(<span style={{ fontFamily: 'monospace', fontSize: 12 }}>{isOff ? deleteTarget.target_email : deleteTarget.employee_email}</span>) sera supprimée définitivement de l'historique.
             </p>
             <p style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 18 }}>
-              Ceci ne supprime pas le compte M365 réel — uniquement cette ligne dans l'application.
+              {isOff ? 'Ceci ne réactive rien dans Microsoft 365 — uniquement cette ligne dans l\'application.' : 'Ceci ne supprime pas le compte M365 réel — uniquement cette ligne dans l\'application.'}
             </p>
 
             {deleteError && (

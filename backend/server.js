@@ -9,7 +9,7 @@
 //   2FA OTP store .......... codes email de la connexion de secours (mémoire)
 //   Helpers ................ dbRow/dbRows, logAction, validations, hash scrypt
 //   Auth middleware ........ auth (session cookie), requireRole, requireModule, requireSuperAdmin, modulesFor
-//   Auth routes ............ /api/auth/login (secours, ADMIN seulement), 2FA, me, logout, mot de passe de lancement, invitations (legacy)
+//   Auth routes ............ /api/auth/login (secours, ADMIN seulement), 2FA, me, logout, mot de passe de lancement
 //   Connexion Microsoft .... SSO OpenID Connect : /api/auth/microsoft/login et /callback (lib/microsoftSso.js)
 //   Graph proxy routes ..... groupes, licences (lecture pour l'assistant d'onboarding)
 //   Onboarding execution ... executeOnboarding (phase 1) puis executeOnboardingBackground (phase 2, +60 s)
@@ -84,9 +84,8 @@ const { MODULES, effectiveModules, parseModules } = require('./lib/modules');
 const sso = require('./lib/microsoftSso');
 
 const SETTINGS_MAP = {
-  azure_tenant_id:       'AZURE_TENANT_ID',
-  azure_client_id:       'AZURE_CLIENT_ID',
-  // azure_client_secret intentionally excluded — env-only, never stored in DB
+  // AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET : .env UNIQUEMENT, jamais modifiables depuis l'interface ni stockés en base
+  // (ils servent aussi à vérifier les jetons de connexion Microsoft : les laisser modifiables permettrait de changer l'autorité de confiance).
   default_domain:        'DEFAULT_DOMAIN',
   usage_location:        'USAGE_LOCATION',
   force_change_password:        'FORCE_CHANGE_PASSWORD',
@@ -370,7 +369,8 @@ function requireRole(...roles) {
 // irréversibles (ex. suppression définitive de l'historique) qu'on ne veut réserver qu'à une
 // poignée de personnes de confiance, même parmi les admins.
 function isSuperAdmin(user) {
-  const allowed = (process.env.SUPER_ADMIN_EMAILS || 'harchad.randriamifidy@captivea.com')
+  // Uniquement la variable du .env : plus d'adresse de repli écrite en dur (audit, constat n° 8). Sans variable, personne n'est super admin.
+  const allowed = (process.env.SUPER_ADMIN_EMAILS || '')
     .split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
   return !!user?.email && allowed.includes(user.email.toLowerCase());
 }
@@ -397,7 +397,7 @@ function countActiveAdmins(db, exceptId = null) {
 
 // ─── Auth routes ──────────────────────────────────────────────────────────────
 
-// Un seul rate-limiter partagé par IP entre login/2FA/invite/mot de passe de lancement avait
+// Un seul rate-limiter partagé par IP entre login/2FA/mot de passe de lancement avait
 // un effet de bord grave : le LAUNCH_PASSWORD est un secret PARTAGÉ entre tous les opérateurs
 // IT, donc plusieurs personnes au bureau passent par la même IP publique (NAT). Une seule
 // personne qui se trompe plusieurs fois en tapant ce mot de passe épuisait le quota partagé
@@ -417,7 +417,6 @@ function makeLimiter(max, extra = {}) {
 
 const authLimiter          = makeLimiter(10); // login (pré-auth, par IP — inchangé)
 const twoFaLimiter         = makeLimiter(10); // vérification 2FA (pré-auth, par IP)
-const inviteLimiter        = makeLimiter(10); // acceptation d'invitation (pré-auth, par IP)
 const launchPasswordLimiter = makeLimiter(10, { keyGenerator: (req) => req.user.id }); // par utilisateur
 
 app.post('/api/auth/login', authLimiter, async (req, res) => {
@@ -541,13 +540,26 @@ app.get('/api/auth/microsoft/callback', ssoLimiter, async (req, res) => {
       identity = await sso.finishAuth({ code, state });
     } catch (e) {
       logAction(`[AUTH] SSO Microsoft échec : ${e.message}`);
-      return fail('failed');
+      return fail(e.code === 'guest' ? 'guest' : 'failed');
     }
   }
 
-  const user = dbRow(db, `SELECT * FROM users WHERE email=?`, [normalizeEmail(identity.email)]);
+  // Rattachement : d'abord par identifiant Entra (oid, immuable) ; à défaut par email, uniquement si le compte de l'app
+  // n'est pas encore relié à un autre compte Microsoft (sinon : même adresse, autre personne → refus).
+  let user = identity.oid ? dbRow(db, `SELECT * FROM users WHERE entra_oid=?`, [identity.oid]) : null;
+  if (!user) {
+    user = dbRow(db, `SELECT * FROM users WHERE email=?`, [normalizeEmail(identity.email)]);
+    if (user && user.entra_oid && user.entra_oid !== identity.oid) {
+      logAction(`[AUTH] SSO Microsoft — compte ${user.email} déjà relié à un autre compte Microsoft : connexion refusée`);
+      return fail('mismatch');
+    }
+  }
   if (!user) { logAction(`[AUTH] SSO Microsoft — compte inconnu : ${identity.email}`); return fail('unauthorized'); }
   if (user.status === 'disabled') { logAction(`[AUTH] SSO Microsoft — compte désactivé : ${user.email}`); return fail('disabled'); }
+  if (identity.oid && !user.entra_oid) {
+    db.run(`UPDATE users SET entra_oid=? WHERE id=?`, [identity.oid, user.id]);
+    logAction(`[AUTH] SSO Microsoft — compte ${user.email} relié à son identifiant Entra`);
+  }
   if (user.status === 'pending') {
     // Invitation jamais acceptée : Microsoft vient de prouver l'identité, le compte peut être activé
     db.run(`UPDATE users SET status='active', invite_token=NULL, invite_expires=NULL WHERE id=?`, [user.id]);
@@ -615,47 +627,6 @@ app.post('/api/auth/verify-launch-password', auth, launchPasswordLimiter, async 
   res.json({ ok: true });
 });
 
-app.get('/api/auth/invite/:token', inviteLimiter, async (req, res) => {
-  if (!isValidUUID(req.params.token)) return res.status(404).json({ error: 'Invitation invalide ou expirée' });
-  const db = await getDB();
-  const user = dbRow(db,
-    `SELECT id, name, email FROM users WHERE invite_token=? AND (invite_expires IS NULL OR invite_expires > datetime('now'))`,
-    [req.params.token]);
-  if (!user) return res.status(404).json({ error: 'Invitation invalide ou expirée' });
-  res.json({ user });
-});
-
-app.post('/api/auth/invite/:token', inviteLimiter, async (req, res) => {
-  if (!isValidUUID(req.params.token)) return res.status(404).json({ error: 'Invitation invalide ou expirée' });
-  const { password } = req.body;
-  const pwErr = validatePassword(password);
-  if (pwErr) return res.status(400).json({ error: pwErr });
-  const db = await getDB();
-  const user = dbRow(db,
-    `SELECT id, name, email, role FROM users WHERE invite_token=? AND (invite_expires IS NULL OR invite_expires > datetime('now'))`,
-    [req.params.token]);
-  if (!user) {
-    logAction(`Tentative d'acceptation d'invitation avec token invalide/expiré`);
-    return res.status(404).json({ error: 'Invitation invalide ou expirée' });
-  }
-  const hash = await hashPassword(password);
-  // Consommation ATOMIQUE du token : la condition `invite_token=?` garantit l'usage unique même si
-  // deux requêtes concurrentes passent le SELECT ci-dessus (la 2e modifiera 0 ligne → rejetée).
-  db.run(`UPDATE users SET password_hash=?, invite_token=NULL, invite_expires=NULL, status='active' WHERE id=? AND invite_token=?`, [hash, user.id, req.params.token]);
-  if (db.getRowsModified() === 0) {
-    logAction(`Invitation déjà consommée — requête concurrente rejetée`);
-    return res.status(409).json({ error: 'Invitation déjà utilisée' });
-  }
-  saveDB();
-  logAction(`Invitation acceptée par ${user.email} (activation de compte)`);
-  const sessionToken = uuidv4();
-  const expires = new Date(Date.now() + SESSION_TTL_DAYS * 86400000).toISOString();
-  db.run(`INSERT INTO sessions VALUES (?,?,?,?,?)`, [sessionToken, user.id, user.name, user.role, expires]);
-  saveDB();
-  res.cookie('session', sessionToken, sessionCookieOpts());
-  res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role, modules: modulesFor(user) } });
-});
-
 // ─── Graph proxy routes ────────────────────────────────────────────────────────
 
 app.get('/api/graph/groups', auth, requireModule('onboarding'), async (req, res) => {
@@ -671,7 +642,9 @@ app.get('/api/graph/groups', auth, requireModule('onboarding'), async (req, res)
 
 // Aperçu des groupes SharePoint/communication qui seront ajoutés pour un poste/pays/ville
 // donné — sans rien exécuter. Utilisé pour confirmer avant une mutation ou un onboarding manuel.
-app.get('/api/onboardings/resolve-groups', auth, requireModule('onboarding'), async (req, res) => {
+// Réservé aux admins (audit, constat n° 9) : seule la page Mutation (admin) l'utilise ; ouverte aux opérateurs, elle
+// permettait de dresser la carte complète poste × pays → groupes (noms et identifiants).
+app.get('/api/onboardings/resolve-groups', auth, requireRole('admin'), requireModule('onboarding'), async (req, res) => {
   const { jobRole, location, city, excludeGroupId } = req.query;
   const tooLong = (s, n) => typeof s === 'string' && s.length > n;
   if (tooLong(jobRole, 128) || tooLong(location, 64) || tooLong(city, 128))
@@ -766,13 +739,16 @@ async function resolveSharePointCommGroups(db, { location, jobRole, city, exclud
 // Ajoute l'utilisateur à chaque groupe SharePoint/communication résolu, avec fallback
 // Exchange PowerShell si Graph refuse (listes mail-enabled/distribution). `logPrefix` est
 // préfixé à chaque ligne de log pour distinguer l'appelant (onboarding auto vs manuel).
+// Renvoie la liste des groupes qui n'ont pas pu être ajoutés ([{ name, error }]), pour que l'appelant puisse l'afficher.
 async function applySharePointCommGroups(spGroups, adUserId, userPrincipalName, logPrefix) {
+  const failed = [];
   let bgToken = null;
-  try { bgToken = await getOffboardToken(); } catch (_) {}
+  // Jamais de vrai jeton en MOCK_GRAPH : sinon de vrais groupes (autoSubscribe) et Teams seraient modifiés en mode simulé.
+  if (!MOCK_GRAPH) { try { bgToken = await getOffboardToken(); } catch (_) {} }
 
   if (spGroups.length === 0) {
     logAction(`${logPrefix} Aucun groupe SharePoint configuré — étape ignorée`);
-    return;
+    return failed;
   }
   for (const g of spGroups) {
     try {
@@ -791,17 +767,50 @@ async function applySharePointCommGroups(spGroups, adUserId, userPrincipalName, 
           logAction(`${logPrefix} ✅ Ajouté via Exchange PowerShell au groupe "${g.label}"`);
         } catch (psErr) {
           logAction(`${logPrefix} ❌ Exchange PowerShell échoué pour "${g.label}" : ${psErr.message}`);
+          failed.push({ name: g.label, error: String(psErr.message || '').slice(0, 200) });
         }
       } else {
         logAction(`${logPrefix} ❌ Groupe "${g.label}" : ${e.message}`);
+        failed.push({ name: g.label, error: String(e.message || '').slice(0, 200) });
       }
     }
   }
+  return failed;
+}
+
+// Groupes principaux : convention « SP - {clé du poste} {code pays} » (ou « SP - {clé} » pour un poste global),
+// définie dans lib/jobRoles.js (copie de frontend/src/jobRoles.js). Les codes pays viennent du réglage « locations ».
+const { groupNameKey, expectedPrimaryGroupName, primaryGroupNames } = require('./lib/jobRoles');
+const DEFAULT_ORG_LOCATIONS = '[{"code":"FR","name":"France","flag":"🇫🇷"},{"code":"MDG","name":"Madagascar","flag":"🇲🇬"},{"code":"US","name":"United States","flag":"🇺🇸"},{"code":"SG","name":"Singapore","flag":"🇸🇬"},{"code":"LUX","name":"Luxembourg","flag":"🇱🇺"},{"code":"IND","name":"India","flag":"🇮🇳"}]';
+function orgLocationCodes(db) {
+  try {
+    const arr = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='locations'`)?.value || process.env.ORG_LOCATIONS || DEFAULT_ORG_LOCATIONS);
+    return (Array.isArray(arr) ? arr : []).map(l => String(l?.code || '').trim()).filter(Boolean);
+  } catch (_) { return []; }
+}
+// Vrai si le nom est EXACTEMENT celui d'un groupe principal que l'app peut fabriquer (poste connu + pays configuré).
+// Remplace l'ancienne règle « le nom commence par SP », qui attrapait aussi des groupes d'un autre usage (audit, constat n° 4).
+function isPrimaryGroupName(db, displayName) {
+  return primaryGroupNames(orgLocationCodes(db)).has(groupNameKey(displayName));
+}
+
+// Anti-escalade (opérateurs) : un opérateur ne peut utiliser que le groupe proposé pour le poste et le pays déclarés,
+// ou un groupe « pointage » configuré par un admin pour ce même pays (liste du « Changer de groupe » de l'assistant).
+// Tout autre groupe, même « SP - … » valide, est réservé aux administrateurs. Renvoie null si autorisé, sinon le message.
+async function operatorGroupError(db, { groupId, jobRole, location }) {
+  const loc = String(location || '').trim();
+  let pointage = [];
+  try { pointage = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='pointage_assignments'`)?.value || '[]'); } catch (_) {}
+  if (Array.isArray(pointage) && pointage.some(g => g && g.id === groupId && g.location === loc)) return null;
+  const expected = expectedPrimaryGroupName(jobRole, loc);
+  const grp = await getGroupById(groupId);
+  if (expected && grp && groupNameKey(grp.displayName) === groupNameKey(expected)) return null;
+  return 'Seul un administrateur peut choisir un autre groupe que celui prévu pour ce poste et ce pays';
 }
 
 // Anti-escalade de privilèges : un groupId doit soit figurer parmi les groupes déjà
-// configurés par un admin (settings), soit être un vrai groupe de sécurité respectant la
-// convention de provisioning « SP - … ». Empêche un appelant de forger un groupId arbitraire
+// configurés par un admin (settings), soit être un vrai groupe de sécurité portant exactement le nom
+// d'un groupe principal « SP - {poste} {pays} ». Empêche un appelant de forger un groupId arbitraire
 // (ex. un groupe à privilèges) via l'onboarding manuel ou une mutation. Ignoré en mode mock.
 async function validateProvisioningGroup(groupId) {
   if (MOCK_GRAPH) return;
@@ -815,9 +824,9 @@ async function validateProvisioningGroup(groupId) {
     if (configuredIds.has(groupId)) return;
     const grp = await getGroupById(groupId);
     const okSecurity   = grp && grp.securityEnabled === true && grp.mailEnabled === false;
-    const okConvention = grp && /^(2024_)?\s*SP\b/i.test(grp.displayName || '');
+    const okConvention = grp && isPrimaryGroupName(cfgDb, grp.displayName);
     if (!okSecurity || !okConvention) {
-      const err = new Error('Groupe non autorisé (groupe de provisioning « SP - … » requis)');
+      const err = new Error('Groupe non autorisé (groupe principal « SP - {poste} {pays} » ou groupe configuré requis)');
       err.httpStatus = 400;
       throw err;
     }
@@ -832,12 +841,22 @@ async function validateProvisioningGroup(groupId) {
 }
 
 // Groupes « gérés par l'app » éligibles à un retrait automatique lors d'une mutation
-// (changement de poste/pays) : globaux, pays/villes, communication, pointage. Les groupes
+// (changement de poste/pays) : pays/villes, départements, communication, pointage. Les groupes
 // clients/métier (ex. accès à un dossier client) ne sont jamais dans ce pool et ne seront
 // donc jamais touchés par une mutation.
+// Les groupes GLOBAUX (sharepoint_global_groups) n'y sont pas : donnés à tout le monde, quel que soit le
+// poste ou le pays, ils restent valables après une mutation. Les retirer puis les remettre n'apportait
+// rien et pouvait faire perdre l'accès sans alerte si la remise échouait (audit, constat n° 3).
+async function getGlobalGroupIds(db) {
+  try {
+    const arr = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='sharepoint_global_groups'`)?.value || '[]');
+    return new Set((Array.isArray(arr) ? arr : []).map(g => g?.id).filter(Boolean));
+  } catch (_) { return new Set(); }
+}
+
 async function getRemovableGroupPool(db) {
   const ids = new Set();
-  for (const k of ['sharepoint_global_groups', 'sharepoint_country_groups', 'department_assignments', 'pointage_comm_assignments', 'pointage_assignments']) {
+  for (const k of ['sharepoint_country_groups', 'department_assignments', 'pointage_comm_assignments', 'pointage_assignments']) {
     const raw = dbRow(db, `SELECT value FROM settings WHERE key=?`, [k])?.value;
     if (!raw) continue;
     try {
@@ -851,21 +870,72 @@ async function getRemovableGroupPool(db) {
   return ids;
 }
 
+// Accès Microsoft Graph de la mutation et de l'onboarding manuel (employé, appartenances, ajout/retrait d'un membre).
+// En MOCK_GRAPH, tout est simulé par lib/mock.js : AUCUN appel à Microsoft (avant, ces routes appelaient le vrai Graph
+// même en mode simulé). Les groupes de départ simulés d'un employé couvrent tous les cas de l'aperçu (audit, constat n° 11).
+async function mockStartingGroups() {
+  const db = await getDB();
+  const read = k => { try { return JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key=?`, [k])?.value || '[]'); } catch (_) { return []; } };
+  const globals = read('sharepoint_global_groups').filter(g => g?.id);
+  const country = read('sharepoint_country_groups').find(g => g?.id && g.location === 'FR');
+  // noms lisibles pour tous les groupes configurés (sinon un groupe ajouté pendant la simulation s'afficherait par son identifiant)
+  for (const k of ['sharepoint_global_groups', 'sharepoint_country_groups', 'department_assignments', 'pointage_comm_assignments', 'pointage_assignments']) {
+    const arr = read(k);
+    graphLib.rememberGroupNames(arr);
+    graphLib.rememberGroupNames(arr.flatMap(g => (g?.cities || []).map(c => ({ id: c.id, label: c.label || c.name }))));
+  }
+  const asGroup = (g, sec) => ({ id: g.id, displayName: g.label || g.displayName, securityEnabled: sec, mailEnabled: !sec });
+  return [
+    { id: 'mock-hr-fr', displayName: 'SP - HR FR', securityEnabled: true, mailEnabled: false },        // groupe principal → retiré
+    ...globals.map(g => asGroup(g, false)),                                                             // globaux → conservés
+    ...(country ? [asGroup(country, false)] : []),                                                      // pays → retiré si le pays change
+    { id: 'mock-sp-legal-archive', displayName: 'SP Legal Archive', securityEnabled: true, mailEnabled: false },   // autre usage → conservé
+    { id: 'mock-client-acme', displayName: 'Client ACME (accès dossier)', securityEnabled: true, mailEnabled: false }, // hors app → conservé
+  ];
+}
+const memberGraph = MOCK_GRAPH ? {
+  lookupUser: async email => graphLib.mockUserFor(email),
+  listMemberships: userId => graphLib.mockMemberships(userId, mockStartingGroups),
+  removeMember: (groupId, userId) => graphLib.mockRemoveMember(groupId, userId),
+  addMember: (groupId, userId, groupName) => graphLib.mockAddMember(groupId, userId, groupName),
+} : {
+  lookupUser: (email, select = 'id,displayName,userPrincipalName') =>
+    require('./lib/graph').graphFetch(`/users/${encodeURIComponent(email)}?$select=${select}`),
+  // Microsoft renvoie les appartenances par pages (100 par défaut) : on suit @odata.nextLink jusqu'à la dernière,
+  // sinon les groupes au-delà de la première page seraient ignorés (ni affichés, ni retirés). Limite de sécurité : 50 pages.
+  listMemberships: async userId => {
+    const { graphFetch } = require('./lib/graph');
+    const items = [];
+    let next = `/users/${encodeURIComponent(userId)}/memberOf?$select=id,displayName,securityEnabled,mailEnabled&$top=999`;
+    for (let page = 0; next && page < 50; page++) {
+      const r = await graphFetch(next);
+      items.push(...(r?.value || []));
+      const link = r?.['@odata.nextLink'];
+      next = typeof link === 'string' && link.startsWith('https://graph.microsoft.com/') ? link : null;
+    }
+    return items;
+  },
+  removeMember: (groupId, userId) => require('./lib/graph').graphFetch(
+    `/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/$ref`, { method: 'DELETE' }),
+  addMember: (groupId, userId) => require('./lib/graph').graphFetch(`/groups/${encodeURIComponent(groupId)}/members/$ref`, {
+    method: 'POST', body: { '@odata.id': `https://graph.microsoft.com/v1.0/directoryObjects/${userId}` },
+  }),
+};
+
 // Liste les groupes M365 actuels d'un utilisateur, avec un indicateur "removable" : vrai si
-// le groupe fait partie du pool ci-dessus, OU s'il suit la convention de sécurité « SP - … »
-// (le groupe de rôle principal). Les groupes hors de ce périmètre (accès client, etc.) sont
+// le groupe fait partie du pool ci-dessus, OU s'il porte exactement le nom d'un groupe principal
+// « SP - {poste} {pays} » (isPrimaryGroupName). Les groupes hors de ce périmètre (accès client, etc.) sont
 // listés mais jamais retirés. Utilisé pour l'aperçu et l'exécution d'une mutation.
 async function getUserGroups(userId) {
-  const { graphFetch } = require('./lib/graph');
-  const memberOf = await graphFetch(`/users/${encodeURIComponent(userId)}/memberOf?$select=id,displayName,securityEnabled,mailEnabled`);
-  const groups = (memberOf?.value || []).filter(g => g['@odata.type'] === '#microsoft.graph.group');
+  const groups = (await memberGraph.listMemberships(userId)).filter(g => g['@odata.type'] === '#microsoft.graph.group');
   const db = await getDB();
   const pool = await getRemovableGroupPool(db);
-  const spConvention = /^(2024_)?\s*SP\b/i;
+  const globals = await getGlobalGroupIds(db);
   return groups.map(g => ({
     id: g.id,
     displayName: g.displayName,
-    removable: pool.has(g.id) || (g.securityEnabled === true && g.mailEnabled === false && spConvention.test(g.displayName || '')),
+    // un groupe global n'est jamais retiré ; un groupe « SP … » ne l'est que s'il porte exactement le nom d'un groupe principal
+    removable: !globals.has(g.id) && (pool.has(g.id) || (g.securityEnabled === true && g.mailEnabled === false && isPrimaryGroupName(db, g.displayName))),
   }));
 }
 
@@ -941,6 +1011,8 @@ async function sendGithubInvite(email, logPrefix) {
   const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
   const GITHUB_ORG   = process.env.GITHUB_ORG || 'Riss-Group';
   if (!GITHUB_TOKEN) return { invited: false };
+  // Mode simulé : jamais de vraie invitation GitHub (le jeton du .env local est réel)
+  if (MOCK_GRAPH) { logAction(`${logPrefix} ⏭️ Invitation GitHub — ignorée en mode mock`); return { invited: false }; }
 
   try {
     const ghRes = await fetch(`https://api.github.com/orgs/${encodeURIComponent(GITHUB_ORG)}/invitations`, {
@@ -983,42 +1055,54 @@ async function sendGithubInvite(email, logPrefix) {
   }
 }
 
-async function assignPrimaryGroupAndSpComm({ adUser, groupId, groupName, jobRole, location, city, logPrefix }) {
-  const { graphFetch } = require('./lib/graph');
-  let skipped = false;
+// Ajoute l'utilisateur à son groupe principal. Renvoie true s'il en était déjà membre ; lève une erreur (httpStatus 500) sinon.
+async function addPrimaryGroup({ adUser, groupId, groupName, logPrefix }) {
   try {
-    await graphFetch(`/groups/${encodeURIComponent(groupId)}/members/$ref`, {
-      method: 'POST',
-      body: { '@odata.id': `https://graph.microsoft.com/v1.0/directoryObjects/${adUser.id}` },
-    });
+    await memberGraph.addMember(groupId, adUser.id, groupName);
     logAction(`${logPrefix} ✅ ${adUser.displayName} ajouté au groupe "${groupName}"`);
+    return false;
   } catch (e) {
     if (e.graphStatus === 400 && /already exist/i.test(e.message || '')) {
-      skipped = true;
       logAction(`${logPrefix} ⏭️ ${adUser.displayName} déjà membre de "${groupName}"`);
-    } else {
-      const err = new Error(e.message);
-      err.httpStatus = 500;
-      throw err;
+      return true;
     }
+    const err = new Error(e.message);
+    err.httpStatus = 500;
+    throw err;
   }
+}
 
-  let spGroupCount = 0;
+// Groupes SharePoint/communication du poste/pays/ville (globaux, pays, villes, départements, pointage).
+async function resolveRoleCommGroups({ groupId, jobRole, location, city }) {
+  return resolveSharePointCommGroups(await getDB(), {
+    location: location?.trim() || '',
+    jobRole: jobRole?.trim() || '',
+    city: city?.trim() || '',
+    excludeGroupId: groupId,
+  });
+}
+
+// Ajoute ces groupes ; renvoie { spGroupCount, failedAdditions } (les échecs ne bloquent pas : ils sont renvoyés pour affichage).
+async function applyRoleCommGroups({ adUser, spGroups, logPrefix }) {
   try {
-    const cfgDb = await getDB();
-    const spGroups = await resolveSharePointCommGroups(cfgDb, {
-      location: location?.trim() || '',
-      jobRole: jobRole?.trim() || '',
-      city: city?.trim() || '',
-      excludeGroupId: groupId,
-    });
-    spGroupCount = spGroups.length;
-    await applySharePointCommGroups(spGroups, adUser.id, adUser.userPrincipalName || adUser.mail || adUser.displayName, logPrefix);
+    const failedAdditions = await applySharePointCommGroups(spGroups, adUser.id, adUser.userPrincipalName || adUser.mail || adUser.displayName, logPrefix);
+    return { spGroupCount: spGroups.length, failedAdditions };
   } catch (e) {
     logAction(`${logPrefix} ❌ Groupes SharePoint/communication : ${e.message}`);
+    return { spGroupCount: spGroups.length, failedAdditions: [{ name: 'Groupes SharePoint/communication', error: String(e.message || '').slice(0, 200) }] };
   }
+}
 
-  return { skipped, spGroupCount };
+async function assignPrimaryGroupAndSpComm({ adUser, groupId, groupName, jobRole, location, city, logPrefix }) {
+  const skipped = await addPrimaryGroup({ adUser, groupId, groupName, logPrefix });
+  let spGroups = [];
+  try {
+    spGroups = await resolveRoleCommGroups({ groupId, jobRole, location, city });
+  } catch (e) {
+    logAction(`${logPrefix} ❌ Groupes SharePoint/communication : ${e.message}`);
+    return { skipped, spGroupCount: 0, failedAdditions: [{ name: 'Groupes SharePoint/communication', error: String(e.message || '').slice(0, 200) }] };
+  }
+  return { skipped, ...(await applyRoleCommGroups({ adUser, spGroups, logPrefix })) };
 }
 
 // Si la phase 2 (groupes/GitHub/Teams) plante, la ligne resterait en 'partial' pour toujours :
@@ -1047,7 +1131,8 @@ async function executeOnboardingBackground(id, adUserId, userPrincipalName, step
   logAction(`[${id}] [BG] Démarrage de l'intégration groupes/Teams/GitHub pour ${onb.employee_email}`);
 
   let bgToken = null;
-  try { bgToken = await getOffboardToken(); } catch (_) {}
+  // Jamais de vrai jeton en MOCK_GRAPH : sinon de vrais groupes (autoSubscribe) et Teams seraient modifiés en mode simulé.
+  if (!MOCK_GRAPH) { try { bgToken = await getOffboardToken(); } catch (_) {} }
 
   // Étape 4 — Groupes SharePoint & Communication
   if (step4Enabled) {
@@ -1274,12 +1359,10 @@ app.post('/api/onboardings/manual', auth, requireRole('admin'), requireModule('o
     return res.status(e.httpStatus || 500).json({ error: e.message });
   }
 
-  const { graphFetch } = require('./lib/graph');
-
-  // 1. Look up user in Azure AD
+  // 1. Look up user in Azure AD (simulé en MOCK_GRAPH)
   let adUser;
   try {
-    adUser = await graphFetch(`/users/${encodeURIComponent(email.trim())}?$select=id,displayName`);
+    adUser = await memberGraph.lookupUser(email.trim(), 'id,displayName');
   } catch (e) {
     if (e.graphStatus === 404) return res.status(404).json({ error: 'Utilisateur introuvable dans Azure AD' });
     logAction(`[manual] ❌ Lookup AD ${email} : ${e.message}`);
@@ -1316,16 +1399,15 @@ app.post('/api/onboardings/manual', auth, requireRole('admin'), requireModule('o
 app.get('/api/onboardings/transfer/groups', auth, requireRole('admin'), requireModule('onboarding'), async (req, res) => {
   const email = req.query.email?.trim();
   if (!isValidEmail(email)) return res.status(400).json({ error: 'Email invalide' });
-  const { graphFetch } = require('./lib/graph');
   let adUser;
   try {
-    adUser = await graphFetch(`/users/${encodeURIComponent(email)}?$select=id,displayName`);
+    adUser = await memberGraph.lookupUser(email, 'id,displayName');
   } catch (e) {
     if (e.graphStatus === 404) return res.status(404).json({ error: 'Utilisateur introuvable dans Azure AD' });
     return res.status(500).json({ error: e.message });
   }
   try {
-    const groups = MOCK_GRAPH ? [] : await getUserGroups(adUser.id);
+    const groups = await getUserGroups(adUser.id); // simulés en MOCK_GRAPH
     res.json({ displayName: adUser.displayName, groups });
   } catch (e) {
     res.status(502).json({ error: e.message });
@@ -1352,53 +1434,82 @@ app.post('/api/onboardings/transfer', auth, requireRole('admin'), requireModule(
     return res.status(e.httpStatus || 500).json({ error: e.message });
   }
 
-  const { graphFetch } = require('./lib/graph');
-
   let adUser;
   try {
-    adUser = await graphFetch(`/users/${encodeURIComponent(email.trim())}?$select=id,displayName,userPrincipalName`);
+    adUser = await memberGraph.lookupUser(email.trim(), 'id,displayName,userPrincipalName');
   } catch (e) {
     if (e.graphStatus === 404) return res.status(404).json({ error: 'Utilisateur introuvable dans Azure AD' });
     logAction(`[transfer] ❌ Lookup AD ${email} : ${e.message}`);
     return res.status(500).json({ error: e.message });
   }
 
-  // 1. Retrait des groupes gérés par l'app uniquement (globaux/pays/villes/communication/
-  // pointage + groupe SP) — jamais les groupes hors de ce périmètre (accès client, etc.).
-  // Le compte et sa licence ne sont jamais touchés.
+  // Ordre sûr (audit, constat n° 6) : le NOUVEAU groupe principal est ajouté AVANT tout retrait. S'il échoue, on s'arrête :
+  // la personne garde ses anciens accès, rien n'est cassé. Pendant quelques secondes elle a l'ancien et le nouveau groupe.
+  const userForGroups = { ...adUser, userPrincipalName: adUser.userPrincipalName || email.trim() };
+
+  // 1. Nouveau groupe principal
+  let skipped;
+  try {
+    skipped = await addPrimaryGroup({ adUser: userForGroups, groupId, groupName, logPrefix: '[transfer]' });
+  } catch (e) {
+    logAction(`[transfer] ❌ Ajout au nouveau groupe "${groupName}" impossible — mutation arrêtée, aucun groupe retiré : ${e.message}`);
+    return res.status(e.httpStatus || 500).json({ error: `Impossible d'ajouter la personne au nouveau groupe « ${groupName} » : ${e.message}. Rien n'a été retiré : ses anciens accès sont intacts, tu peux réessayer.` });
+  }
+
+  // 2. Groupes SharePoint/communication du nouveau poste/pays, calculés AVANT le retrait : un ancien groupe qui reste
+  // valable (ex. groupe pays quand seul le poste change) est conservé au lieu d'être retiré puis remis.
+  // Si ce calcul échoue, on ne retire rien (on ne saurait pas quels accès remettre).
+  let spGroups;
+  try {
+    spGroups = await resolveRoleCommGroups({ groupId, jobRole, location, city });
+  } catch (e) {
+    logAction(`[transfer] ❌ Calcul des groupes du nouveau poste/pays : ${e.message} — aucun ancien groupe retiré`);
+    return res.json({
+      ok: true, skipped, spGroupCount: 0, removedGroups: [],
+      failedRemovals: [{ name: 'Anciens groupes (non retirés)', error: 'Groupes du nouveau poste/pays incalculables : rien n\'a été retiré' }],
+      failedAdditions: [{ name: 'Groupes SharePoint/communication', error: String(e.message || '').slice(0, 200) }],
+      displayName: adUser.displayName, groupName,
+    });
+  }
+  const keepIds = new Set(spGroups.map(g => g.id));
+
+  // 3. Retrait des groupes gérés par l'app uniquement (pays/villes/départements/communication/
+  // pointage + groupe principal « SP - poste pays ») — jamais les groupes globaux, ni ceux du nouveau poste/pays,
+  // ni ceux hors de ce périmètre (accès client, etc.). Le compte et sa licence ne sont jamais touchés.
+  // Un retrait refusé par Microsoft est renvoyé dans failedRemovals pour être affiché à l'admin (audit, constat n° 5).
   let removedGroups = [];
-  if (!MOCK_GRAPH) {
+  const failedRemovals = [];
+  { // (exécuté aussi en MOCK_GRAPH : memberGraph simule alors les retraits)
     try {
       const currentGroups = await getUserGroups(adUser.id);
-      for (const g of currentGroups.filter(g => g.removable && g.id !== groupId)) {
+      for (const g of currentGroups.filter(g => g.removable && g.id !== groupId && !keepIds.has(g.id))) {
         try {
-          await graphFetch(`/groups/${encodeURIComponent(g.id)}/members/${encodeURIComponent(adUser.id)}/$ref`, { method: 'DELETE' });
+          await memberGraph.removeMember(g.id, adUser.id);
           removedGroups.push(g.displayName);
           logAction(`[transfer] ✅ ${adUser.displayName} retiré du groupe "${g.displayName}"`);
         } catch (e) {
+          if (e.graphStatus === 404) { // déjà plus membre (retiré entre l'aperçu et l'exécution) : le résultat voulu est atteint
+            removedGroups.push(g.displayName);
+            continue;
+          }
           logAction(`[transfer] ❌ Retrait groupe "${g.displayName}" : ${e.message}`);
+          failedRemovals.push({ name: g.displayName, error: String(e.message || '').slice(0, 200) });
         }
       }
     } catch (e) {
+      // Lecture impossible : rien n'a été retiré ; la personne a déjà le nouveau groupe principal (étape 1).
       logAction(`[transfer] ❌ Lecture des groupes actuels : ${e.message}`);
-      return res.status(502).json({ error: `Impossible de lire les groupes actuels : ${e.message}` });
+      return res.status(502).json({ error: `Impossible de lire les groupes actuels : ${e.message}. La personne a été ajoutée au nouveau groupe « ${groupName} », mais aucun ancien groupe n'a été retiré : relance la mutation.` });
     }
   }
 
-  // 2 & 3. Nouveau groupe principal + groupes SharePoint/communication du nouveau poste/pays
-  let skipped, spGroupCount;
-  try {
-    ({ skipped, spGroupCount } = await assignPrimaryGroupAndSpComm({
-      adUser: { ...adUser, userPrincipalName: adUser.userPrincipalName || email.trim() },
-      groupId, groupName, jobRole, location, city,
-      logPrefix: '[transfer]',
-    }));
-  } catch (e) {
-    return res.status(e.httpStatus || 500).json({ error: e.message });
-  }
+  // 4. Groupes SharePoint/communication du nouveau poste/pays (déjà membre = sans effet)
+  const { spGroupCount, failedAdditions } = await applyRoleCommGroups({ adUser: userForGroups, spGroups, logPrefix: '[transfer]' });
 
-  logAction(`[transfer] 🎉 Mutation terminée pour ${adUser.displayName} — ${removedGroups.length} groupe(s) retiré(s), nouveau groupe "${groupName}"`);
-  res.json({ ok: true, skipped, spGroupCount, removedGroups, displayName: adUser.displayName, groupName });
+  const incomplete = failedRemovals.length + failedAdditions.length > 0;
+  logAction(`[transfer] ${incomplete ? '⚠️ Mutation incomplète' : '🎉 Mutation terminée'} pour ${adUser.displayName} — ${removedGroups.length} groupe(s) retiré(s), nouveau groupe "${groupName}"`
+    + (incomplete ? ` — échecs : ${failedRemovals.length} retrait(s), ${failedAdditions.length} ajout(s)` : ''));
+  res.json({ ok: true, skipped, spGroupCount, removedGroups, failedRemovals, failedAdditions, displayName: adUser.displayName, groupName });
 });
 
 // ─── Onboarding routes ────────────────────────────────────────────────────────
@@ -1532,9 +1643,16 @@ app.post('/api/onboardings', auth, requireModule('onboarding'), async (req, res)
       if (!configuredIds.has(groupId)) {
         const grp = await getGroupById(groupId);
         const okSecurity   = grp && grp.securityEnabled === true && grp.mailEnabled === false;
-        const okConvention = grp && /^(2024_)?\s*SP\b/i.test(grp.displayName || '');
+        const okConvention = grp && isPrimaryGroupName(cfgDb, grp.displayName);
         if (!okSecurity || !okConvention)
-          return res.status(400).json({ error: 'Groupe non autorisé (groupe de provisioning « SP - … » requis)' });
+          return res.status(400).json({ error: 'Groupe non autorisé (groupe principal « SP - {poste} {pays} » ou groupe configuré requis)' });
+      }
+      if (req.user.role !== 'admin') {
+        const refusal = await operatorGroupError(cfgDb, { groupId, jobRole, location });
+        if (refusal) {
+          logAction(`[onboarding] Groupe refusé pour l'opérateur ${req.user.email} : ${groupName} (poste « ${String(jobRole || '').slice(0, 64)} », pays « ${String(location || '').slice(0, 64)} »)`);
+          return res.status(403).json({ error: refusal });
+        }
       }
     } catch (e) {
       if (e.graphStatus === 404) return res.status(400).json({ error: "Groupe introuvable dans l'organisation" });
@@ -1612,8 +1730,8 @@ app.get('/api/admin/settings', auth, requireRole('admin'), requireModule('onboar
   const dbMap = Object.fromEntries(rows.map(r => [r.key, r.value]));
 
   res.json({
-    azure_tenant_id:        dbMap.azure_tenant_id        || process.env.AZURE_TENANT_ID      || '',
-    azure_client_id:        dbMap.azure_client_id        || process.env.AZURE_CLIENT_ID      || '',
+    azure_tenant_id:        process.env.AZURE_TENANT_ID || '', // lecture seule (.env)
+    azure_client_id:        process.env.AZURE_CLIENT_ID || '', // lecture seule (.env)
     azure_client_secret_set: !!process.env.AZURE_CLIENT_SECRET,
     default_domain:         dbMap.default_domain         || process.env.DEFAULT_DOMAIN       || '',
     usage_location:         dbMap.usage_location         || process.env.USAGE_LOCATION       || 'FR',
@@ -1628,7 +1746,7 @@ app.get('/api/admin/settings', auth, requireRole('admin'), requireModule('onboar
     pointage_comm_assignments: JSON.parse(dbMap.pointage_comm_assignments || process.env.SP_POINTAGE_COMM_ASSIGNMENTS  || '[]'),
     pointage_departments:      JSON.parse(dbMap.pointage_departments      || process.env.SP_POINTAGE_DEPARTMENTS        || '[]'),
     department_assignments:    JSON.parse(dbMap.department_assignments    || process.env.SP_DEPARTMENT_ASSIGNMENTS      || '[]'),
-    locations:                 JSON.parse(dbMap.locations                 || process.env.ORG_LOCATIONS                || '[{"code":"FR","name":"France","flag":"🇫🇷"},{"code":"MDG","name":"Madagascar","flag":"🇲🇬"},{"code":"US","name":"United States","flag":"🇺🇸"},{"code":"SG","name":"Singapore","flag":"🇸🇬"},{"code":"LUX","name":"Luxembourg","flag":"🇱🇺"},{"code":"IND","name":"India","flag":"🇮🇳"}]'),
+    locations:                 JSON.parse(dbMap.locations                 || process.env.ORG_LOCATIONS                || DEFAULT_ORG_LOCATIONS),
     onboarding_domains:        JSON.parse(dbMap.onboarding_domains        || process.env.ONBOARDING_DOMAINS            || '[{"domain":"captivea.com","active":true}]'),
   });
 });
@@ -1642,8 +1760,6 @@ const SCALAR_RULES = {
   force_change_password: v => v === 'true' || v === 'false',
   usage_location:        v => /^[A-Za-z]{2}$/.test(v),
   default_domain:        v => v.length <= 253 && /^(?!-)[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(v),
-  azure_tenant_id:       v => v === '' || isValidUUID(v),
-  azure_client_id:       v => v === '' || isValidUUID(v),
 };
 function validateSettingValue(key, v) {
   if (Array.isArray(v)) {
@@ -1701,12 +1817,6 @@ app.put('/api/admin/settings', auth, requireRole('admin'), requireModule('onboar
     }
   });
   saveDB();
-
-  if (req.body.azure_tenant_id || req.body.azure_client_id) {
-    const { resetCredential } = require('./lib/graph');
-    resetCredential();
-  }
-
   res.json({ ok: true });
 });
 
@@ -1810,6 +1920,20 @@ app.put('/api/monitoring/ai-usage/prices', auth, requireRole('admin'), requireMo
   res.json({ ok: true, prices });
 });
 
+// Pays proposés dans le filtre du tableau de bord (libellé + autres écritures trouvées dans la colonne « Pays » des rapports).
+app.put('/api/monitoring/ai-usage/countries', auth, requireRole('admin'), requireModule('monitoring'), async (req, res) => {
+  const db = await getDB();
+  let countries;
+  try {
+    countries = aiUsage.saveCountries(db, req.body);
+  } catch (e) {
+    return res.status(e.httpStatus || 400).json({ error: e.message });
+  }
+  saveDB();
+  logAction(`[monitoring] Liste des pays mise à jour par ${req.user.email} : ${countries.map(c => c.name).join(', ')}`);
+  res.json({ ok: true, countries });
+});
+
 app.get('/api/monitoring/ai-usage/summary', auth, requireModule('monitoring'), async (req, res) => {
   const db = await getDB();
   res.json(aiUsage.summary(db, { isMock: MOCK_GRAPH }));
@@ -1828,9 +1952,10 @@ app.post('/api/monitoring/ai-usage/demo', auth, requireRole('admin'), requireMod
 
 app.get('/api/admin/users', auth, requireRole('admin'), requireSuperAdmin, async (req, res) => {
   const db = await getDB();
-  const users = dbRows(db, `SELECT id, name, email, role, status, created_at, modules FROM users ORDER BY name`);
-  res.json(users.map(({ modules, ...u }) => ({
+  const users = dbRows(db, `SELECT id, name, email, role, status, created_at, modules, entra_oid FROM users ORDER BY name`);
+  res.json(users.map(({ modules, entra_oid, ...u }) => ({
     ...u,
+    microsoftLinked: !!entra_oid, // l'identifiant lui-même n'est jamais renvoyé
     modules: modulesFor({ role: u.role, email: u.email, modules }),
     superAdmin: isSuperAdmin(u),
   })));
@@ -1902,7 +2027,7 @@ app.put('/api/admin/users/:id', auth, requireRole('admin'), requireSuperAdmin, a
   if (email != null && !isValidEmail(normalizeEmail(email)))
     return res.status(400).json({ error: 'Adresse email invalide' });
   const db = await getDB();
-  const current = dbRow(db, `SELECT status, role FROM users WHERE id=?`, [req.params.id]);
+  const current = dbRow(db, `SELECT status, role, email FROM users WHERE id=?`, [req.params.id]);
   if (!current) return res.status(404).json({ error: 'Utilisateur introuvable' });
 
   if (status != null && !['active', 'pending', 'disabled'].includes(status))
@@ -1925,11 +2050,29 @@ app.put('/api/admin/users/:id', auth, requireRole('admin'), requireSuperAdmin, a
     `UPDATE users SET name=COALESCE(?,name), email=COALESCE(?,email), role=COALESCE(?,role), status=COALESCE(?,status) WHERE id=?`,
     [name ?? null, email ? normalizeEmail(email) : null, role ?? null, status ?? null, req.params.id]
   );
+  // Nouvelle adresse = peut-être une autre personne : le lien avec le compte Microsoft est remis à zéro
+  // (il sera refait à la prochaine connexion SSO avec la nouvelle adresse).
+  if (email && normalizeEmail(email) !== current.email)
+    db.run(`UPDATE users SET entra_oid=NULL WHERE id=?`, [req.params.id]);
   // Invalider les sessions actives si rôle ou statut modifié
   if (role != null || status != null)
     db.run(`DELETE FROM sessions WHERE user_id=?`, [req.params.id]);
   saveDB();
   res.json(dbRow(db, `SELECT id, name, email, role, status FROM users WHERE id=?`, [req.params.id]));
+});
+
+// Délie le compte Microsoft (oid) : la prochaine connexion SSO avec l'adresse du compte le reliera de nouveau.
+// Utile si le compte Entra de la personne a été recréé (nouvel oid).
+app.delete('/api/admin/users/:id/microsoft-link', auth, requireRole('admin'), requireSuperAdmin, async (req, res) => {
+  if (!isValidUUID(req.params.id)) return res.status(400).json({ error: 'ID invalide' });
+  const db = await getDB();
+  const target = dbRow(db, `SELECT id, email FROM users WHERE id=?`, [req.params.id]);
+  if (!target) return res.status(404).json({ error: 'Utilisateur introuvable' });
+  db.run(`UPDATE users SET entra_oid=NULL WHERE id=?`, [target.id]);
+  db.run(`DELETE FROM sessions WHERE user_id=?`, [target.id]);
+  saveDB();
+  logAction(`[AUTH] Compte Microsoft délié de ${target.email} par ${req.user.email}`);
+  res.json({ ok: true });
 });
 
 app.delete('/api/admin/users/:id', auth, requireRole('admin'), requireSuperAdmin, async (req, res) => {
@@ -2009,7 +2152,9 @@ app.get('/api/admin/security-events/archive', auth, requireRole('admin'), requir
   }
 });
 
-app.delete('/api/admin/security-events', auth, requireRole('admin'), requireModule('onboarding'), (req, res) => {
+// Effacer tout ou partie du journal de sécurité : réservé au super admin (comme la suppression d'historique), pour qu'un
+// admin ordinaire ne puisse pas effacer les traces de sa propre activité (audit, constat n° 7). L'archivage reste ouvert aux admins.
+app.delete('/api/admin/security-events', auth, requireRole('admin'), requireSuperAdmin, requireModule('onboarding'), (req, res) => {
   try {
     fs.writeFileSync(LOG_FILE, '');
     logAction(`Journal de sécurité effacé par ${req.user.email}`);
@@ -2019,7 +2164,7 @@ app.delete('/api/admin/security-events', auth, requireRole('admin'), requireModu
   }
 });
 
-app.delete('/api/admin/security-events/selection', auth, requireRole('admin'), requireModule('onboarding'), (req, res) => {
+app.delete('/api/admin/security-events/selection', auth, requireRole('admin'), requireSuperAdmin, requireModule('onboarding'), (req, res) => {
   const { timestamps } = req.body || {};
   if (!Array.isArray(timestamps) || timestamps.length === 0)
     return res.status(400).json({ error: 'Aucune sélection' });
@@ -2333,12 +2478,63 @@ app.post('/api/offboarding', auth, requireRole('admin'), requireModule('onboardi
     createdAt: new Date().toISOString(),
   });
   logAction(`Offboarding lancé pour ${targetEmail} par ${req.user.email}`);
+  await saveOffboardingRecord(offboardingJobs.get(jobId), req.user.name); // visible dans l'historique dès le lancement
   executeOffboarding(jobId).catch(err => {
     logAction(`[OFFBOARD][${jobId}] Fatal : ${err.message}`);
     const job = offboardingJobs.get(jobId);
     if (job) { job.status = 'failed'; job.error = err.message; }
-  });
+  }).finally(() => saveOffboardingRecord(offboardingJobs.get(jobId), req.user.name)); // résultat final (étapes, groupes retirés, erreur)
   res.json({ id: jobId });
+});
+
+// Historique des offboardings : l'état d'un job vit en mémoire pendant son exécution ; cette ligne en garde une trace durable
+// (qui, quand, quelles étapes, quels groupes retirés, quelle erreur). Écrite au lancement puis mise à jour à la fin.
+async function saveOffboardingRecord(job, initiatedByName) {
+  if (!job) return;
+  try {
+    const db = await getDB();
+    const finished = job.status === 'done' || job.status === 'failed';
+    db.run(`INSERT OR IGNORE INTO offboardings
+      (id, target_email, access_to, transfer_emails, status, initiated_by, initiated_by_name, is_mock, created_at)
+      VALUES (?,?,?,?,?,?,?,?,?)`,
+      [job.id, job.targetEmail, job.accessTo || null, job.transferEmails ? 1 : 0, job.status, job.initiatedBy || null,
+       initiatedByName || null, MOCK_GRAPH ? 1 : 0, String(job.createdAt || new Date().toISOString()).replace('T', ' ').slice(0, 19)]);
+    db.run(`UPDATE offboardings SET target_name=?, status=?, error=?, steps=?, removed_groups=?, completed_at=? WHERE id=?`,
+      [job.displayName || null, job.status, job.error ? String(job.error).slice(0, 500) : null,
+       JSON.stringify(job.steps || []), JSON.stringify(job.removedGroups || []),
+       finished ? new Date().toISOString().replace('T', ' ').slice(0, 19) : null, job.id]);
+    saveDB();
+  } catch (e) {
+    console.error("[offboarding] enregistrement de l'historique impossible :", e.message); // ne bloque jamais l'offboarding
+  }
+}
+
+// Liste pour la page Historique (admins). Même séparation simulé / réel que les onboardings.
+app.get('/api/offboardings', auth, requireRole('admin'), requireModule('onboarding'), async (req, res) => {
+  const db = await getDB();
+  const { status, limit } = req.query;
+  let sql = `SELECT * FROM offboardings WHERE is_mock=?`;
+  const params = [MOCK_GRAPH ? 1 : 0];
+  if (status) { sql += ` AND status=?`; params.push(String(status)); }
+  sql += ` ORDER BY created_at DESC`;
+  const n = parseInt(limit, 10);
+  sql += ` LIMIT ?`; params.push(Number.isInteger(n) && n > 0 ? Math.min(n, 500) : 200);
+  const parse = (v, fallback) => { try { return JSON.parse(v); } catch (_) { return fallback; } };
+  res.json(dbRows(db, sql, params).map(r => ({
+    ...r, transfer_emails: !!r.transfer_emails, steps: parse(r.steps, []), removed_groups: parse(r.removed_groups, []),
+  })));
+});
+
+// Suppression d'une ligne d'historique : super administrateur uniquement (comme pour les onboardings).
+app.delete('/api/offboardings/:id', auth, requireSuperAdmin, async (req, res) => {
+  if (!isValidUUID(req.params.id)) return res.status(400).json({ error: 'ID invalide' });
+  const db = await getDB();
+  const row = dbRow(db, `SELECT id, target_email FROM offboardings WHERE id=?`, [req.params.id]);
+  if (!row) return res.status(404).json({ error: 'Offboarding introuvable' });
+  db.run(`DELETE FROM offboardings WHERE id=?`, [req.params.id]);
+  saveDB();
+  logAction(`[OFFBOARD][${req.params.id}] 🗑️ Historique supprimé par ${req.user.email} (${row.target_email})`);
+  res.json({ ok: true });
 });
 
 app.get('/api/offboarding/:id', auth, requireRole('admin'), requireModule('onboarding'), (req, res) => {
@@ -2347,126 +2543,6 @@ app.get('/api/offboarding/:id', auth, requireRole('admin'), requireModule('onboa
   const job = offboardingJobs.get(id);
   if (!job) return res.status(404).json({ error: 'Job introuvable' });
   res.json(job);
-});
-
-app.post('/api/offboarding/:id/confirm', auth, requireRole('admin'), requireModule('onboarding'), (req, res) => {
-  const { id } = req.params;
-  if (!isValidUUID(id)) return res.status(400).json({ error: 'ID invalide' });
-  const job = offboardingJobs.get(id);
-  if (!job) return res.status(404).json({ error: 'Job introuvable' });
-  if (job.status !== 'waitingForConfirmation') return res.status(400).json({ error: 'Job non en attente de confirmation' });
-  if (typeof job._confirmResolve === 'function') {
-    job._confirmResolve();
-    delete job._confirmResolve;
-  }
-  logAction(`[OFFBOARD][${id}] Script Exchange confirmé par ${req.user.email}`);
-  res.json({ ok: true });
-});
-
-// Échappe les métacaractères PowerShell pour les chaînes double-quotées : ` $ "
-function escapePsDQ(s) {
-  return String(s ?? '').replace(/`/g, '``').replace(/\$/g, '`$').replace(/"/g, '`"').replace(/\r?\n/g, ' ');
-}
-// Échappe pour les chaînes single-quotées PowerShell : ' → ''
-function escapePsSQ(s) {
-  return String(s ?? '').replace(/'/g, "''");
-}
-
-app.get('/api/offboarding/:id/script', auth, requireRole('admin'), requireModule('onboarding'), (req, res) => {
-  const { id } = req.params;
-  if (!isValidUUID(id)) return res.status(400).json({ error: 'ID invalide' });
-  const job = offboardingJobs.get(id);
-  if (!job) return res.status(404).json({ error: 'Job introuvable' });
-
-  const manualSteps = (job.steps || []).filter(s => s.status === 'manual');
-  if (!manualSteps.length) return res.status(400).json({ error: 'Aucune action manuelle pour ce job' });
-
-  const name = (job.displayName || job.targetEmail).replace(/[^a-zA-Z0-9_-]/g, '_');
-  const date = new Date().toISOString().slice(0, 10);
-
-  // ── Script PowerShell embarqué ──────────────────────────────────────────────
-  const psLines = [
-    `$ErrorActionPreference = 'Continue'`,
-    `$ProgressPreference = 'SilentlyContinue'`,
-    ``,
-    `Write-Host "=============================================" -ForegroundColor Cyan`,
-    `Write-Host "  Offboarding Exchange Online" -ForegroundColor Cyan`,
-    `Write-Host "  ${escapePsDQ(job.displayName || job.targetEmail)}" -ForegroundColor White`,
-    `Write-Host "  Généré le ${date} par ${escapePsDQ(job.initiatedBy)}" -ForegroundColor Gray`,
-    `Write-Host "=============================================" -ForegroundColor Cyan`,
-    `Write-Host ""`,
-    ``,
-    `# 1. Vérification / installation du module`,
-    `Write-Host "Vérification du module ExchangeOnlineManagement..." -ForegroundColor Cyan`,
-    `if (-not (Get-Module -ListAvailable -Name ExchangeOnlineManagement)) {`,
-    `    Write-Host "  Module absent — installation en cours..." -ForegroundColor Yellow`,
-    `    Install-Module ExchangeOnlineManagement -Force -Scope CurrentUser -AllowClobber`,
-    `    Write-Host "  Module installé avec succès." -ForegroundColor Green`,
-    `} else {`,
-    `    Write-Host "  Module déjà installé." -ForegroundColor Green`,
-    `}`,
-    `Write-Host ""`,
-    ``,
-    `# 2. Connexion interactive`,
-    `Write-Host "Connexion à Exchange Online..." -ForegroundColor Cyan`,
-    `Connect-ExchangeOnline -UserPrincipalName "${escapePsDQ(job.initiatedBy)}"`,
-    `Write-Host ""`,
-    `Write-Host "Exécution des actions pour : ${escapePsDQ(job.targetEmail)}" -ForegroundColor White`,
-    `Write-Host "---------------------------------------------"`,
-    `Write-Host ""`,
-  ];
-
-  for (const step of manualSteps) {
-    psLines.push(`# ${step.name}`);
-    psLines.push(`Write-Host ">>> ${step.name}..." -ForegroundColor Yellow`);
-    psLines.push(`try {`);
-    psLines.push(`    ${step.detail}`);
-    psLines.push(`    Write-Host "    [OK]" -ForegroundColor Green`);
-    psLines.push(`} catch {`);
-    psLines.push(`    Write-Host "    [ERREUR] $_" -ForegroundColor Red`);
-    psLines.push(`}`);
-    psLines.push(`Write-Host ""`);
-  }
-
-  psLines.push(`Write-Host "---------------------------------------------"`);
-  psLines.push(`Write-Host "Terminé. Déconnexion..." -ForegroundColor Green`);
-  psLines.push(`Disconnect-ExchangeOnline -Confirm:$false`);
-  psLines.push(`Write-Host ""`);
-  psLines.push(`Write-Host "Appuyez sur une touche pour fermer..." -ForegroundColor Gray`);
-  psLines.push(`$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')`);
-
-  const psContent = psLines.join('\r\n');
-  const psBase64 = Buffer.from(psContent, 'utf8').toString('base64');
-  const tmpName = `offboarding_${id.slice(0, 8)}`;
-
-  // ── Fichier .bat ────────────────────────────────────────────────────────────
-  const bat = [
-    `@echo off`,
-    `chcp 65001 >nul`,
-    `title Offboarding Exchange Online - ${name}`,
-    ``,
-    `:: Écrire le script PowerShell dans un fichier temporaire`,
-    `set "PSFILE=%TEMP%\\${tmpName}.ps1"`,
-    ``,
-    `powershell -Command "$b64='${psBase64}'; $bytes=[System.Convert]::FromBase64String($b64); $txt=[System.Text.Encoding]::UTF8.GetString($bytes); [System.IO.File]::WriteAllText('%PSFILE%',$txt,[System.Text.Encoding]::UTF8)"`,
-    ``,
-    `if not exist "%PSFILE%" (`,
-    `    echo Erreur : impossible de créer le script temporaire.`,
-    `    pause`,
-    `    exit /b 1`,
-    `)`,
-    ``,
-    `:: Lancer PowerShell avec le script`,
-    `powershell -ExecutionPolicy Bypass -File "%PSFILE%"`,
-    ``,
-    `:: Nettoyage`,
-    `del "%PSFILE%" >nul 2>&1`,
-  ].join('\r\n');
-
-  const filename = `offboarding_${name}_${date}.bat`;
-  res.setHeader('Content-Type', 'application/octet-stream');
-  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  res.send(bat);
 });
 
 const MOCK_SEARCH_USERS = [
@@ -2684,6 +2760,11 @@ async function recoverStaleOnboardings() {
   if (stale.length) saveDB();
   if (stale.length) console.log(`[startup] ${stale.length} onboarding(s) interrompu(s) marqué(s) comme échoués`);
 
+  // Offboardings interrompus par un redémarrage : l'état en mémoire est perdu, on ne sait pas jusqu'où ils sont allés.
+  const staleOff = dbRows(db, `SELECT id FROM offboardings WHERE status='running'`);
+  staleOff.forEach(({ id }) => db.run(`UPDATE offboardings SET status='failed', error='Interrompu (redémarrage serveur) : vérifier l''état du compte dans Microsoft 365', completed_at=datetime('now') WHERE id=?`, [id]));
+  if (staleOff.length) { saveDB(); console.log(`[startup] ${staleOff.length} offboarding(s) interrompu(s) marqué(s) comme échoués`); }
+
   // Reprise uniquement des onboardings récents (< 24 h) : relancer des semaines plus tard
   // créerait des comptes ou enverrait des invitations que personne n'attend. Les plus anciens
   // sont marqués en échec, de façon visible, avec la marche à suivre.
@@ -2783,5 +2864,10 @@ getDB().then(async () => {
   }
   app.listen(PORT, () => {
     console.log(`Onboarding M365 — backend sur http://localhost:${PORT}${MOCK_GRAPH ? ' [MOCK]' : ''}`);
+    if (!String(process.env.SUPER_ADMIN_EMAILS || '').trim()) {
+      const msg = 'SUPER_ADMIN_EMAILS absent du .env : aucun super administrateur (Gestion du portail inaccessible)';
+      console.warn(`⚠️  ${msg}`);
+      logAction(`[AUTH] ⚠️ ${msg}`);
+    }
   });
 });

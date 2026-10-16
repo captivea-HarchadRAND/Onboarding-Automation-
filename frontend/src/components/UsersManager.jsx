@@ -92,6 +92,12 @@ export default function UsersManager({ me }) {
     catch (err) { alert(err.message); }
   }
 
+  async function unlinkMicrosoft(u) {
+    if (!confirm(`Délier le compte Microsoft de ${u.name} ? Sa prochaine connexion Microsoft avec ${u.email} le reliera de nouveau.`)) return;
+    try { await api.delete(`/api/admin/users/${u.id}/microsoft-link`); setModal(null); load(); }
+    catch (err) { alert(err.message); }
+  }
+
   async function handleDelete(u) {
     if (!confirm(`Supprimer définitivement ${u.name} ?`)) return;
     try { await api.delete(`/api/admin/users/${u.id}`); load(); }
@@ -302,6 +308,18 @@ export default function UsersManager({ me }) {
                 <option value="pending">En attente</option>
                 <option value="disabled">Désactivé</option>
               </Select>
+            </div>
+            <div className="form-group">
+              <label>Compte Microsoft</label>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 13, color: 'var(--muted)' }}>
+                  {modal.user.microsoftLinked ? 'Relié à son compte Microsoft (première connexion faite).' : 'Pas encore relié : il le sera à sa première connexion Microsoft.'}
+                </span>
+                {modal.user.microsoftLinked && (
+                  <button type="button" className="btn btn-ghost" onClick={() => unlinkMicrosoft(modal.user)}>Délier</button>
+                )}
+              </div>
+              <p className="field-hint">Changer l'email délie aussi le compte Microsoft.</p>
             </div>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               <button type="button" className="btn btn-ghost" onClick={() => setModal(null)}>Annuler</button>

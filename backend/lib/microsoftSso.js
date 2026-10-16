@@ -78,7 +78,7 @@ async function verifyIdToken(idToken, nonce) {
   return c;
 }
 
-// → { email, name } de la personne authentifiée par Microsoft
+// → { email, oid, name } de la personne authentifiée par Microsoft (comptes invités B2B refusés : erreur code « guest »)
 async function finishAuth({ code, state }) {
   const entry = pending.get(state);
   pending.delete(state); // usage unique
@@ -100,9 +100,24 @@ async function finishAuth({ code, state }) {
     throw new Error(`Échange du code refusé (${body.error || res.status}${aad ? ` — ${aad}` : ''})`);
   }
   const claims = await verifyIdToken(body.id_token, entry.nonce);
+  if (isGuest(claims, tenant)) {
+    throw Object.assign(new Error('Compte invité (B2B) refusé : seuls les comptes membres du tenant peuvent se connecter'), { code: 'guest' });
+  }
+  const oid = String(claims.oid || '').trim().toLowerCase();
+  if (!/^[0-9a-f-]{36}$/.test(oid)) throw new Error('Identifiant Entra (oid) absent du jeton');
   const email = String(claims.email || claims.preferred_username || claims.upn || '').trim().toLowerCase();
   if (!email) throw new Error('Adresse email absente du jeton');
-  return { email, name: claims.name || email };
+  return { email, oid, name: claims.name || email };
 }
 
-module.exports = { startAuth, finishAuth, verifyIdToken, redirectUri: () => config().redirectUri };
+// Compte invité (B2B) : authentifié par un autre fournisseur d'identité que le tenant. Entra l'indique par la revendication
+// « idp » (absente pour un membre, ou égale à l'émetteur du tenant), et par « acct » = 1 quand cette revendication facultative
+// est activée. « #EXT# » dans l'UPN est un dernier filet (UPN d'invité, si la revendication est émise).
+function isGuest(c, tenant) {
+  const own = [`https://sts.windows.net/${tenant}/`, `https://login.microsoftonline.com/${tenant}/v2.0`];
+  if (c.idp && !own.includes(c.idp)) return true;
+  if (c.acct === 1 || c.acct === '1') return true;
+  return /#ext#/i.test(String(c.upn || '') + String(c.preferred_username || ''));
+}
+
+module.exports = { startAuth, finishAuth, verifyIdToken, isGuest, redirectUri: () => config().redirectUri };

@@ -1,4 +1,4 @@
-// [EN-TÊTE] jobRoles.js — liste fixe des postes (JOB_ROLES) : sert à l'assistant d'onboarding, aux affectations de groupes par
+// [EN-TÊTE] jobRoles.js — liste fixe des postes (JOB_ROLES ; COPIE côté serveur : backend/lib/jobRoles.js, à garder identique) : sert à l'assistant d'onboarding, aux affectations de groupes par
 // poste (Administration → Pointage / Communication) et aux boîtes partagées par département.
 
 export const JOB_ROLES = [
@@ -13,7 +13,7 @@ export const JOB_ROLES = [
   { label: 'DRH',                         groupKey: 'DRH' },
   { label: 'Email Manager',               groupKey: 'Email Manager' },
   { label: 'HR',                          groupKey: 'HR' },
-  { label: 'HR Reponsable',               groupKey: 'HR Reponsable' },
+  { label: 'HR Reponsable',               groupKey: 'HR Responsable' }, // libellé historique conservé (réglages) ; groupes Entra « SP - HR Responsable … »
   { label: 'Infographiste',               groupKey: 'Infographiste' },
   { label: 'IT Person',                   groupKey: 'IT Person' },
   { label: 'LeadGen',                     groupKey: 'LeadGen' },

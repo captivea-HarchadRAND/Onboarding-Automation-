@@ -113,12 +113,66 @@ async function deleteUser(userId) {
   return null;
 }
 
+// ─── Mutation et onboarding manuel simulés ────────────────────────────────────
+// Appartenances aux groupes gardées EN MÉMOIRE (perdues au redémarrage) : permet de tester en local l'aperçu
+// « sera retiré / conservé » et l'exécution d'une mutation, sans aucun appel à Microsoft.
+const mockMembers = new Map(); // userId → Map(groupId → { id, displayName, securityEnabled, mailEnabled })
+const knownNames = new Map(MOCK_GROUPS.map(g => [g.id, g.displayName]));
+
+function rememberGroupNames(groups) {
+  for (const g of groups || []) if (g?.id) knownNames.set(g.id, g.label || g.displayName || g.id);
+}
+
+function mockUserFor(email) {
+  const e = String(email || '').trim().toLowerCase();
+  const local = e.split('@')[0];
+  return {
+    id: `mock-user-${local.replace(/[^a-z0-9]/g, '-')}`,
+    displayName: local.split(/[._-]/).filter(Boolean).map(s => s[0].toUpperCase() + s.slice(1)).join(' ') || e,
+    userPrincipalName: e,
+  };
+}
+
+// initial : fonction asynchrone qui fournit les groupes de départ d'un employé (appelée une seule fois par employé).
+async function mockMemberships(userId, initial) {
+  if (!mockMembers.has(userId)) {
+    const start = await initial();
+    rememberGroupNames(start);
+    mockMembers.set(userId, new Map(start.map(g => [g.id, g])));
+  }
+  return [...mockMembers.get(userId).values()].map(g => ({ '@odata.type': '#microsoft.graph.group', ...g }));
+}
+
+async function mockRemoveMember(groupId, userId) {
+  await sleep(DELAY / 4);
+  const m = mockMembers.get(userId);
+  if (!m || !m.has(groupId)) { const e = new Error('[MOCK] pas membre du groupe'); e.graphStatus = 404; throw e; }
+  m.delete(groupId);
+}
+
+// Même comportement que Graph : « already exist » (400) si la personne est déjà membre.
+async function mockAddMember(groupId, userId, displayName) {
+  await sleep(DELAY / 4);
+  if (FAIL_STEP === 2) throw new Error('[MOCK] Accès refusé au groupe — permission manquante (simulation d\'erreur step 2)');
+  const m = mockMembers.get(userId) || new Map();
+  mockMembers.set(userId, m);
+  if (m.has(groupId)) { const e = new Error('[MOCK] One or more added object references already exist'); e.graphStatus = 400; throw e; }
+  m.set(groupId, { id: groupId, displayName: displayName || knownNames.get(groupId) || groupId, securityEnabled: true, mailEnabled: false });
+}
+
 module.exports = {
   listGroups,
-  addMemberToGroup,
+  addMemberToGroup: async (groupId, userId) => {
+    const r = await addMemberToGroup(groupId, userId);
+    // enregistre l'appartenance pour la mutation simulée (déjà membre = sans effet, comme lib/group.js)
+    const m = mockMembers.get(userId);
+    if (m && !m.has(groupId)) m.set(groupId, { id: groupId, displayName: knownNames.get(groupId) || groupId, securityEnabled: false, mailEnabled: true });
+    return r;
+  },
   getGroupById,
   listAvailableLicenses,
   assignLicense,
   createUser,
   deleteUser,
+  mockUserFor, mockMemberships, mockRemoveMember, mockAddMember, rememberGroupNames,
 };

@@ -203,6 +203,9 @@ function dashboard(db, { isMock = false } = {}) {
   );
   const months = [...new Set(runs.map(r => r.month))].slice(0, MONTHS_SHOWN).sort();
   const references = queryRows(db, 'SELECT tool, month FROM ai_usage_runs WHERE is_mock=? AND reference=1 ORDER BY month', [mock]);
+  const { countries: listed, countriesSaved } = readCountries(db);
+  const canon = countryMapper(listed);
+  const found = new Set();
   const tools = {};
   for (const [tool, t] of Object.entries(TOOLS)) {
     const mine = runs.filter(r => r.tool === tool && months.includes(r.month));
@@ -221,7 +224,8 @@ function dashboard(db, { isMock = false } = {}) {
       }
       for (const r of queryRows(db, 'SELECT country, email, name, seat, status, usage FROM ai_usage_rows WHERE run_id=?', [run.id])) {
         if (!ANALYSED_STATUSES.includes(r.status)) continue;
-        const country = r.country || '—';
+        const country = canon(r.country);
+        found.add(country);
         const key = `${country}|${run.month}`;
         const c = out.cells[key] || (out.cells[key] = { lic: 0, active: 0, inactive: 0, low: 0, inactifs: {} });
         c.lic++;
@@ -237,7 +241,11 @@ function dashboard(db, { isMock = false } = {}) {
     out.people = [...people.values()];
   }
 
-  return { months, tools, ...readPrices(db) };
+  // Pays proposés dans le filtre : la liste de l'administration, dans son ordre, puis les pays trouvés dans les rapports
+  // mais absents de la liste (jamais masqués : leurs licences comptent dans « Tous les pays »).
+  const names = listed.map(c => c.name);
+  const unlisted = [...found].filter(c => !names.includes(c)).sort();
+  return { months, tools, countries: [...names, ...unlisted], countryList: listed, countriesSaved, unlistedCountries: unlisted, ...readPrices(db) };
 }
 
 // Prix par outil et par siège. Ancien format (un nombre par outil) : lu comme le prix « Standard ».
@@ -277,6 +285,67 @@ function savePrices(db, input) {
   const merged = mergePrices(readPrices(db).prices, parsePrices(input));
   db.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('monitoring_prices', ?)", [JSON.stringify(merged)]);
   return merged;
+}
+
+// Pays (sociétés Captivea) proposés dans le filtre du tableau de bord. « name » = libellé affiché ; « aliases » = autres
+// écritures possibles dans la colonne « Pays » des rapports (« France » → « Captivea France »). Comparaison sans accents ni casse.
+const DEFAULT_COUNTRIES = [
+  { name: 'Captivea France', aliases: ['France'] },
+  { name: 'Captivea Luxembourg', aliases: ['Luxembourg'] },
+  { name: 'Captivea USA', aliases: ['USA', 'United States', 'États-Unis'] },
+  { name: 'Captivea India', aliases: ['India', 'Inde'] },
+];
+const MAX_COUNTRIES = 30, MAX_ALIASES = 10;
+const countryKey = s => stripAccents(s).toLowerCase().replace(/\s+/g, ' ').trim();
+
+function countryMapper(list) {
+  const map = new Map();
+  for (const c of list) for (const n of [c.name, ...c.aliases]) map.set(countryKey(n), c.name);
+  return raw => {
+    const v = String(raw ?? '').trim();
+    if (!v) return '—';
+    return map.get(countryKey(v)) || v;
+  };
+}
+
+function parseCountries(input) {
+  const arr = Array.isArray(input) ? input : input?.countries;
+  if (!Array.isArray(arr)) throw invalid('Liste de pays requise');
+  if (arr.length > MAX_COUNTRIES) throw invalid(`Trop de pays (max ${MAX_COUNTRIES})`);
+  const seen = new Set(), out = [];
+  const clean = v => String(v ?? '').replace(/[\u0000-\u001f]/g, '').trim();
+  for (const c of arr) {
+    if (!c || typeof c !== 'object') continue;
+    const name = clean(c.name);
+    if (!name) continue; // ligne vide : ignorée
+    if (name.length > MAX.country) throw invalid(`Nom de pays trop long : ${name.slice(0, 30)}…`);
+    const rawAliases = Array.isArray(c.aliases) ? c.aliases : String(c.aliases ?? '').split(',');
+    const aliases = [...new Set(rawAliases.map(clean).filter(Boolean))];
+    if (aliases.length > MAX_ALIASES) throw invalid(`Trop d'autres noms pour ${name} (max ${MAX_ALIASES})`);
+    if (aliases.some(a => a.length > MAX.country)) throw invalid(`Autre nom trop long pour ${name}`);
+    for (const n of [name, ...aliases]) {
+      const k = countryKey(n);
+      if (seen.has(k)) throw invalid(`« ${n} » apparaît deux fois dans la liste`);
+      seen.add(k);
+    }
+    out.push({ name, aliases });
+  }
+  if (!out.length) throw invalid('Indique au moins un pays');
+  return out;
+}
+
+function readCountries(db) {
+  try {
+    const row = queryRows(db, "SELECT value FROM settings WHERE key='monitoring_countries'")[0];
+    if (row) return { countries: parseCountries(JSON.parse(row.value)), countriesSaved: true };
+  } catch (_) { /* réglage illisible : liste par défaut */ }
+  return { countries: DEFAULT_COUNTRIES.map(c => ({ ...c, aliases: [...c.aliases] })), countriesSaved: false };
+}
+
+function saveCountries(db, input) {
+  const list = parseCountries(input);
+  db.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('monitoring_countries', ?)", [JSON.stringify(list)]);
+  return list;
 }
 
 // Vue condensée pour le portail : dernier mois de chaque outil, personnes à surveiller par niveau.
@@ -344,4 +413,4 @@ function seedDemo(db, { now = new Date() } = {}) {
   return total;
 }
 
-module.exports = { TOOLS, SEATS, isTool, parsePayload, parseMonth, ingest, dashboard, savePrices, summary, seedDemo, levelOf };
+module.exports = { TOOLS, SEATS, isTool, parsePayload, parseMonth, ingest, dashboard, savePrices, saveCountries, summary, seedDemo, levelOf };

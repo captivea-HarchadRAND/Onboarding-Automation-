@@ -159,6 +159,30 @@ function migrate(db) {
     CREATE INDEX IF NOT EXISTS idx_ai_rows_run ON ai_usage_rows(run_id);`,
     // v9 : accès aux modules du portail par utilisateur (NULL = accès par défaut)
     `ALTER TABLE users ADD COLUMN modules TEXT;`,
+    // v10 : identifiant Entra (oid) du compte Microsoft relié à l'utilisateur, enregistré à la première connexion SSO.
+    // Ensuite, seul ce compte Microsoft peut ouvrir l'accès, même si un autre compte porte la même adresse email.
+    `ALTER TABLE users ADD COLUMN entra_oid TEXT;
+     CREATE UNIQUE INDEX IF NOT EXISTS idx_users_entra_oid ON users(entra_oid) WHERE entra_oid IS NOT NULL;`,
+    // v11 : historique des offboardings (départs d'employés). Avant, l'état n'existait qu'en mémoire du serveur et
+    // disparaissait au redémarrage. steps et removed_groups sont du JSON ; is_mock sépare les essais simulés du réel.
+    `CREATE TABLE IF NOT EXISTS offboardings (
+      id                 TEXT PRIMARY KEY,
+      target_email       TEXT NOT NULL,
+      target_name        TEXT,
+      access_to          TEXT,
+      transfer_emails    INTEGER DEFAULT 0,
+      status             TEXT NOT NULL,
+      error              TEXT,
+      steps              TEXT,
+      removed_groups     TEXT,
+      initiated_by       TEXT,
+      initiated_by_name  TEXT,
+      is_mock            INTEGER DEFAULT 0,
+      created_at         TEXT DEFAULT (datetime('now')),
+      completed_at       TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_offboardings_created ON offboardings(created_at);
+    CREATE INDEX IF NOT EXISTS idx_offboardings_status  ON offboardings(status);`,
   ];
 
   for (let i = current; i < migrations.length; i++) {

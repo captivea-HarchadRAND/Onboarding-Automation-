@@ -2,7 +2,7 @@
 //   1 Identité (prénom, nom, poste, localisation, ville, email + domaine) · 2 Groupe de sécurité (proposé automatiquement d'après
 //   Administration → Pointage, sinon recherche manuelle) · 3 Licence + code de confirmation IT (LAUNCH_PASSWORD) + compte à rebours
 //   · 4 Exécution (sondage du statut) · 5 Résultat (email + mot de passe temporaire, affiché une seule fois).
-//   Appelle : /api/graph/licenses, /api/graph/groups, /api/onboardings/resolve-groups (aperçu des autres groupes),
+//   Appelle : /api/graph/licenses, /api/graph/groups,
 //   /api/auth/verify-launch-password, POST /api/onboardings, GET /api/onboardings/:id.
 //   NB : lit /api/admin/settings (réservé aux admins) pour les domaines ; un opérateur retombe sur les valeurs par défaut.
 
@@ -10,6 +10,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import Select from '../components/Select';
 import { api } from '../api';
+import { useUser } from '../context/UserContext';
 import { JOB_ROLES } from '../jobRoles';
 
 async function copyText(text) {
@@ -396,6 +397,8 @@ function RecapItem({ label, color }) {
 }
 
 export default function NewOnboarding() {
+  const { user } = useUser();
+  const isAdmin = user?.role === 'admin'; // un opérateur ne peut garder que le groupe prévu (contrôlé aussi par le serveur)
   const [step, setStep]       = useState(1);
   const [form, setForm]       = useState(EMPTY_FORM);
   const emailEditedRef        = useRef(false); // true dès que l'utilisateur modifie l'email à la main
@@ -522,9 +525,14 @@ export default function NewOnboarding() {
         if (data.length > 0) {
           const exact = data.find(g =>
             g.displayName.replace(/^2024_/, '').toLowerCase() === query.toLowerCase()
-          ) || data[0];
-          setAutoGroup(exact);
-          setSelectedGroup(exact);
+          ) || (isAdmin ? data[0] : null);
+          if (exact) {
+            setAutoGroup(exact);
+            setSelectedGroup(exact);
+          } else {
+            setShowManualSearch(true);
+            loadLocationGroups();
+          }
         } else {
           setShowManualSearch(true);
           loadLocationGroups();
