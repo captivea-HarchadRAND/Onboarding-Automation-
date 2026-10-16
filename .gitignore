@@ -23,3 +23,6 @@ frontend/dist/
 # Système
 .DS_Store
 Thumbs.db
+
+# Config MCP locale (contient des clés API)
+.mcp.json

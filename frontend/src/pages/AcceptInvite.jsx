@@ -1,3 +1,6 @@
+// [EN-TÊTE] AcceptInvite.jsx — LEGACY : activation d'un compte par lien d'invitation (/invite/:token) avec choix du mot de passe.
+// Les invitations ne sont plus créées (les comptes se connectent par Microsoft) ; la page ne sert que pour d'anciens liens encore valides.
+
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../api';
@@ -46,7 +49,7 @@ export default function AcceptInvite() {
           {inviteUser && <p style={{ color: 'var(--muted)', fontSize: 13 }}>Bienvenue, {inviteUser.name}</p>}
         </div>
         <div className="card">
-          {error && <div className="error-box">{error}</div>}
+          {error && <div className="error-box" role="alert">{error}</div>}
           <form onSubmit={handleSubmit}>
             <div className="form-group">
               <label>Mot de passe</label>

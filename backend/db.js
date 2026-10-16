@@ -1,3 +1,11 @@
+// [EN-TÊTE] backend/db.js — base de données SQLite via sql.js (en mémoire, enregistrée dans backend/data/onboarding.db).
+//   getDB()  : charge (ou crée) le fichier, active les clés étrangères, applique les migrations, renvoie la base unique.
+//   saveDB() : exporte la base et l'écrit de façon ATOMIQUE (fichier .tmp puis renommage) — à appeler après chaque écriture.
+//   migrate(): tableau « migrations » appliqué dans l'ordre ; schema_version retient la dernière appliquée.
+//              Pour changer le schéma : AJOUTER une entrée à la FIN du tableau (ne jamais modifier une migration existante).
+//   Dossier de données : variable DATA_DIR (sinon backend/data).
+//   Tables : users, sessions, onboardings, onboarding_steps, settings, ai_usage_runs, ai_usage_rows, schema_version.
+
 const path = require('path');
 const fs = require('fs');
 
@@ -123,6 +131,34 @@ function migrate(db) {
     // après la création si la première invitation a réussi.
     `ALTER TABLE onboardings ADD COLUMN github_invited INTEGER DEFAULT 0;
      ALTER TABLE onboardings ADD COLUMN github_reminder_sent_at TEXT;`,
+
+    // v8: module Monitoring — relevés mensuels d'usage des outils IA (Claude, ChatGPT, Fireflies)
+    // poussés par le workflow n8n « superviser les IA ». Un relevé par (outil, mois, mock).
+    `CREATE TABLE IF NOT EXISTS ai_usage_runs (
+      id                TEXT PRIMARY KEY,
+      tool              TEXT NOT NULL,
+      month             TEXT NOT NULL,
+      reference         INTEGER DEFAULT 0,
+      missing_countries TEXT,
+      is_mock           INTEGER DEFAULT 0,
+      received_at       TEXT DEFAULT (datetime('now')),
+      UNIQUE(tool, month, is_mock)
+    );
+    CREATE TABLE IF NOT EXISTS ai_usage_rows (
+      run_id    TEXT NOT NULL REFERENCES ai_usage_runs(id) ON DELETE CASCADE,
+      country   TEXT,
+      email     TEXT NOT NULL,
+      name      TEXT,
+      seat      TEXT,
+      role      TEXT,
+      status    TEXT NOT NULL,
+      usage     REAL NOT NULL DEFAULT 0,
+      cost_usd  REAL,
+      products  TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_rows_run ON ai_usage_rows(run_id);`,
+    // v9 : accès aux modules du portail par utilisateur (NULL = accès par défaut)
+    `ALTER TABLE users ADD COLUMN modules TEXT;`,
   ];
 
   for (let i = current; i < migrations.length; i++) {

@@ -1,3 +1,6 @@
+// [EN-TÊTE] backend/lib/group.js — groupes Microsoft 365 via Graph : listGroups (recherche, filtre OData sécurisé),
+// addMemberToGroup, getGroupById. Remplacé par lib/mock.js quand MOCK_GRAPH=true.
+
 const { graphFetch } = require('./graph');
 
 async function listGroups(search = '') {

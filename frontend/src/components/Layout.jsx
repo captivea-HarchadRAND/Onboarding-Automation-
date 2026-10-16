@@ -1,6 +1,12 @@
+// [EN-TÊTE] Layout.jsx — coque de l'application : barre latérale, fil d'Ariane, bandeau « mode développement ».
+//   buildNavGroups(chemin, user) : menu contextuel. Sur le portail : Portail + liens vers MES modules + (super admin) Gestion du portail.
+//   Dans un module : ses pages (modules.js : nav) puis son groupe « Administration » (adminNav, réservé aux admins).
+//   ROUTE_LABELS : libellés du fil d'Ariane (ajouter une entrée pour toute nouvelle page).
+
 import { useState } from 'react';
-import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
+import { Outlet, NavLink, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useUser } from '../context/UserContext';
+import { MODULES, MODULE_ICONS, moduleForPath, canAccess } from '../modules';
 
 /* ── SVG icon system (no emoji — ui-ux-pro-max rule) ─────────────── */
 function Icon({ path, size = 16 }) {
@@ -25,44 +31,55 @@ const ICONS = {
   admin:        ['M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z', 'M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z'],
   security:     'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z',
   offboarding:  'M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h4a3 3 0 0 1 3 3v1',
+  mailbox:      ['M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z', 'M22 6l-10 7L2 6'],
   transfer:     ['M17 3l4 4-4 4', 'M3 11V9a4 4 0 0 1 4-4h14', 'M7 21l-4-4 4-4', 'M21 13v2a4 4 0 0 1-4 4H3'],
   logout:       ['M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4', 'M16 17l5-5-5-5', 'M21 12H9'],
   chevronDown:  'M6 9l6 6 6-6',
   panelClose:   ['M11 3H3v18h8', 'M15 9l-3 3 3 3'],
   panelOpen:    ['M3 3h8v18H3', 'M13 9l3 3-3 3'],
   beaker:       ['M9 3h6', 'M10 9L4.5 18A2 2 0 0 0 6 21h12a2 2 0 0 0 1.5-3L14 9', 'M9 3v6m6-6v6'],
+  ...MODULE_ICONS,
 };
 
 /* ── Nav config ───────────────────────────────────────────────────── */
-const NAV_GROUPS = [
-  {
-    items: [
-      { to: '/',         label: 'Dashboard',         icon: 'dashboard',   end: true },
-      { to: '/new',      label: 'Nouvel onboarding', icon: 'new' },
-      { to: '/transfer', label: 'Changement de poste/pays', icon: 'transfer', adminOnly: true },
-      { to: '/history',  label: 'Historique',         icon: 'history' },
-    ],
-  },
-  {
-    heading: 'Administration',
-    adminOnly: true,
-    items: [
-      { to: '/admin',       label: 'Administration', icon: 'admin' },
-      { to: '/security',    label: 'Sécurité',       icon: 'security' },
-      { to: '/offboarding', label: 'Offboarding',    icon: 'offboarding', danger: true },
-    ],
-  },
-];
+// Navigation contextuelle : le lien Portail, puis les pages du module courant (ou les liens vers les
+// modules accessibles sur le portail). L'administration d'un module est dans son adminNav ; celle du
+// portail (utilisateurs et accès) est sur l'accueil.
+function buildNavGroups(pathname, user) {
+  const mod = moduleForPath(pathname);
+  const groups = [{ items: [{ to: '/', label: 'Portail', icon: 'portal', end: true }] }];
+  // Page d'accueil du portail : liens vers les modules accessibles, puis la gestion des accès (administrateurs).
+  if (!mod) {
+    const links = MODULES.filter(m => canAccess(user, m.id)).map(m => ({ to: m.to, label: m.label, icon: m.icon }));
+    if (links.length) groups.push({ heading: 'Modules', items: links });
+    groups.push({ heading: 'Administration', superAdminOnly: true, items: [{ to: '/portal-admin', label: 'Gestion du portail', icon: 'admin' }] });
+    return groups;
+  }
+  groups.push({ heading: mod.label, items: mod.nav });
+  if (mod.adminNav) groups.push({ heading: 'Administration', adminOnly: true, items: mod.adminNav });
+  return groups;
+}
 
 const ROUTE_LABELS = {
-  '/':            'Dashboard',
+  '/':            'Portail',
+  '/dashboard':   'Dashboard',
   '/new':         'Nouvel onboarding',
+  '/mailbox-access': 'Accès boîtes partagées',
   '/transfer':    'Changement de poste/pays',
   '/history':     'Historique',
+  '/monitoring':  'Monitoring',
+  '/portal-admin': 'Gestion du portail',
+  '/monitoring/admin': 'Administration',
   '/admin':       'Administration',
   '/security':    'Sécurité',
   '/offboarding': 'Offboarding',
 };
+
+function labelForPath(pathname) {
+  if (ROUTE_LABELS[pathname]) return ROUTE_LABELS[pathname];
+  const key = Object.keys(ROUTE_LABELS).find(k => k !== '/' && pathname.startsWith(k + '/'));
+  return key ? ROUTE_LABELS[key] : '';
+}
 
 /* ── NavLink item ─────────────────────────────────────────────────── */
 function SidebarLink({ item }) {
@@ -125,13 +142,22 @@ function SidebarLink({ item }) {
 
 /* ── Layout ───────────────────────────────────────────────────────── */
 export default function Layout() {
-  const { user, logout, mockMode } = useUser();
+  const { user, logout, mockMode, isSuperAdmin } = useUser();
   const navigate = useNavigate();
   const location = useLocation();
   const [open, setOpen] = useState(true);
   const [wsHover, setWsHover] = useState(false);
 
-  const pageLabel = ROUTE_LABELS[location.pathname] ?? 'Onboarding';
+  const navGroups = buildNavGroups(location.pathname, user);
+  const currentModule = moduleForPath(location.pathname);
+  const pageLabel = labelForPath(location.pathname);
+  // Fil d'Ariane : Portail / module / page (sans doublon quand la page porte le nom du module)
+  const crumbs = [
+    ...(location.pathname === '/' ? [] : [{ label: 'Portail', to: '/' }]),
+    ...(currentModule ? [{ label: currentModule.label, to: currentModule.to }] : []),
+    ...(pageLabel && pageLabel !== currentModule?.label ? [{ label: pageLabel }] : []),
+  ];
+  if (!crumbs.length) crumbs.push({ label: 'Portail' });
   const initials  = user?.name?.[0]?.toUpperCase() ?? '?';
 
   async function handleLogout() {
@@ -220,8 +246,9 @@ export default function Layout() {
 
           {/* Nav groups */}
           <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {NAV_GROUPS.map((group, i) => {
+            {navGroups.map((group, i) => {
               if (group.adminOnly && user?.role !== 'admin') return null;
+              if (group.superAdminOnly && !isSuperAdmin) return null;
               return (
                 <div key={i}>
                   {group.heading && (
@@ -307,9 +334,17 @@ export default function Layout() {
 
             {/* Breadcrumb */}
             <nav aria-label="Fil d'Ariane" style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13 }}>
-              <span style={{ color: 'var(--muted)' }}>Onboarding M365</span>
-              <span style={{ color: 'var(--border)', fontSize: 16 }}>/</span>
-              <span style={{ color: 'var(--text)', fontWeight: 600 }}>{pageLabel}</span>
+              {crumbs.map((c, i) => {
+                const last = i === crumbs.length - 1;
+                return (
+                  <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+                    {i > 0 && <span style={{ color: 'var(--border)', fontSize: 16 }}>/</span>}
+                    {last || !c.to
+                      ? <span style={{ color: last ? 'var(--text)' : 'var(--muted)', fontWeight: last ? 600 : 400 }} aria-current={last ? 'page' : undefined}>{c.label}</span>
+                      : <Link to={c.to} style={{ color: 'var(--muted)', textDecoration: 'none' }}>{c.label}</Link>}
+                  </span>
+                );
+              })}
             </nav>
           </div>
 

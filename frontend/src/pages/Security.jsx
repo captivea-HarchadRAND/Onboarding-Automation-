@@ -1,3 +1,6 @@
+// [EN-TÊTE] Security.jsx — module Onboarding, administrateurs : journal de sécurité (/security). Liste les 50 derniers événements
+// reconnus dans onboarding.log (SECURITY_PATTERNS dans server.js), avec archivage et suppression.
+
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 

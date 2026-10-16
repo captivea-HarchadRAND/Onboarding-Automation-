@@ -1,3 +1,6 @@
+// [EN-TÊTE] jobRoles.js — liste fixe des postes (JOB_ROLES) : sert à l'assistant d'onboarding, aux affectations de groupes par
+// poste (Administration → Pointage / Communication) et aux boîtes partagées par département.
+
 export const JOB_ROLES = [
   { label: 'Administrative responsible',  groupKey: 'Administrative responsible' },
   { label: 'Budget Manager',              groupKey: 'Budget Manager' },

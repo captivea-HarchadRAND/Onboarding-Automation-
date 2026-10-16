@@ -1,3 +1,51 @@
+// ═══════════════════════════════════════════════════════════════════════════════
+// [EN-TÊTE] backend/server.js — point d'entrée unique du backend (Express + sql.js)
+// ═══════════════════════════════════════════════════════════════════════════════
+// Portail interne Captivea : modules ONBOARDING (comptes Microsoft 365) et MONITORING (licences IA).
+// Doc détaillée : docs/portail-et-connexion.md, docs/onboarding.md, docs/monitoring.md. Vue d'ensemble : CLAUDE.md.
+//
+// PLAN DU FICHIER (bandeaux « // ─── … » ci-dessous, dans cet ordre) :
+//   Env loading ............ lecture de backend/.env (PAS de commentaire en fin de ligne dans .env !)
+//   2FA OTP store .......... codes email de la connexion de secours (mémoire)
+//   Helpers ................ dbRow/dbRows, logAction, validations, hash scrypt
+//   Auth middleware ........ auth (session cookie), requireRole, requireModule, requireSuperAdmin, modulesFor
+//   Auth routes ............ /api/auth/login (secours, ADMIN seulement), 2FA, me, logout, mot de passe de lancement, invitations (legacy)
+//   Connexion Microsoft .... SSO OpenID Connect : /api/auth/microsoft/login et /callback (lib/microsoftSso.js)
+//   Graph proxy routes ..... groupes, licences (lecture pour l'assistant d'onboarding)
+//   Onboarding execution ... executeOnboarding (phase 1) puis executeOnboardingBackground (phase 2, +60 s)
+//   Manual onboarding ...... compte M365 déjà créé : groupes + GitHub
+//   Mutation ............... changement de poste/pays (retire les groupes gérés par l'app, ajoute les nouveaux)
+//   Onboarding routes ...... liste, détail, création
+//   Stats .................. chiffres du Dashboard
+//   Admin: Organisation .... réglages (groupes, pays, domaines…) stockés en base, validateSettingValue
+//   Monitoring ............. ingestion n8n, tableau de bord, prix, emplacement SharePoint, synchro
+//   Admin: Users ........... utilisateurs + accès aux modules (SUPER ADMIN seulement)
+//   Security events ........ journal de sécurité lu dans onboarding.log (SECURITY_PATTERNS)
+//   Exchange PowerShell .... runExchangeScript → /opt/scripts/exchange.ps1 (hors dépôt, sur le VPS)
+//   Offboarding ............ 8 étapes, état gardé en mémoire (offboardingJobs)
+//   Boîtes partagées ....... accès à la demande
+//   Admin: Schema .......... activer/désactiver les étapes du pipeline, délais de nouvel essai licence
+//   Error handler / Démarrage (migrations, recoverStaleOnboardings, rappels GitHub, synchro SharePoint auto)
+//
+// CONVENTIONS
+//   - Messages et journaux en FRANÇAIS. logAction(...) écrit dans backend/onboarding.log (lu par la page Sécurité).
+//   - Toute écriture en base est suivie de saveDB() (sql.js est en mémoire ; écriture atomique sur disque).
+//   - Une route protégée s'écrit : app.get(chemin, auth, [requireRole('admin')], [requireModule('x')], handler).
+//   - Réglages métier : table settings (clé/valeur). SETTINGS_MAP relie une clé à une variable d'environnement ;
+//     au démarrage la base REMPLACE la valeur du .env (loadSettingsFromDB).
+//   - MOCK_GRAPH=true (dev) : tous les appels Microsoft sont simulés (lib/mock.js), SSO simulé, synchro SharePoint coupée.
+//
+// ÉTAT EN MÉMOIRE (perdu au redémarrage, c'est voulu ou connu)
+//   otpStore (codes 2FA), tempPasswordStore (mot de passe temporaire d'un nouvel employé, 10 min, lu UNE fois),
+//   offboardingJobs (suivi des offboardings), états SSO en cours (lib/microsoftSso.js).
+//
+// À SAVOIR
+//   - Un push sur la branche main déploie automatiquement sur le VPS (.github/workflows/deploy.yml). Le .env du VPS n'est jamais touché.
+//   - Rôles : operator, admin ; « super admin » = adresse listée dans SUPER_ADMIN_EMAILS (gestion du portail, suppression d'historique).
+//   - Les administrateurs ont tous les modules par défaut ; users.modules (JSON) restreint (lib/modules.js).
+//   - Le mot de passe n'est qu'un accès de SECOURS réservé aux admins (/login/backup) ; la connexion normale est Microsoft.
+// ═══════════════════════════════════════════════════════════════════════════════
+
 const express   = require('express');
 const helmet    = require('helmet');
 const cors      = require('cors');
@@ -32,6 +80,8 @@ process.on('unhandledRejection', (err) => {
 });
 
 const { getDB, saveDB } = require('./db');
+const { MODULES, effectiveModules, parseModules } = require('./lib/modules');
+const sso = require('./lib/microsoftSso');
 
 const SETTINGS_MAP = {
   azure_tenant_id:       'AZURE_TENANT_ID',
@@ -42,6 +92,7 @@ const SETTINGS_MAP = {
   force_change_password:        'FORCE_CHANGE_PASSWORD',
   sharepoint_global_groups:  'SP_GLOBAL_GROUPS',
   global_shared_mailboxes:   'GLOBAL_SHARED_MAILBOXES',
+  department_shared_mailboxes: 'DEPARTMENT_SHARED_MAILBOXES',
   sharepoint_country_groups: 'SP_COUNTRY_GROUPS',
   communication_groups:      'SP_COMMUNICATION_GROUPS',
   pointage_assignments:      'SP_POINTAGE_ASSIGNMENTS',
@@ -147,7 +198,6 @@ if (process.env.NODE_ENV === 'production' && !process.env.FRONTEND_URL) {
 }
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5174';
 const SESSION_TTL_DAYS = 14;
-const INVITE_TTL_DAYS = 7;
 const MIN_PASSWORD_LEN = 12;
 const LOG_FILE = path.join(__dirname, 'onboarding.log');
 const DIST = path.join(__dirname, '../frontend/dist');
@@ -289,10 +339,24 @@ async function auth(req, res, next) {
   const db = await getDB();
   const session = dbRow(db, `SELECT user_id FROM sessions WHERE token=? AND expires_at > datetime('now')`, [token]);
   if (!session) return res.status(401).json({ error: 'Session expirée' });
-  const user = dbRow(db, `SELECT id, name, email, role, status FROM users WHERE id=?`, [session.user_id]);
-  if (!user || user.status !== 'active') return res.status(401).json({ error: 'Compte désactivé' });
-  req.user = user;
+  const row = dbRow(db, `SELECT id, name, email, role, status, modules FROM users WHERE id=?`, [session.user_id]);
+  if (!row || row.status !== 'active') return res.status(401).json({ error: 'Compte désactivé' });
+  const { modules, ...user } = row;
+  req.user = { ...user, modules: modulesFor(row) };
   next();
+}
+
+// Accès à un module du portail (les administrateurs ont accès à tous).
+function requireModule(id) {
+  return (req, res, next) => {
+    if (!req.user?.modules?.includes(id)) return res.status(403).json({ error: 'Accès au module refusé' });
+    next();
+  };
+}
+
+// Modules accessibles : un super administrateur a toujours tout, les autres selon leur réglage.
+function modulesFor(u) {
+  return isSuperAdmin(u) ? Object.keys(MODULES) : effectiveModules(u);
 }
 
 function requireRole(...roles) {
@@ -354,7 +418,6 @@ function makeLimiter(max, extra = {}) {
 const authLimiter          = makeLimiter(10); // login (pré-auth, par IP — inchangé)
 const twoFaLimiter         = makeLimiter(10); // vérification 2FA (pré-auth, par IP)
 const inviteLimiter        = makeLimiter(10); // acceptation d'invitation (pré-auth, par IP)
-const verifyPasswordLimiter = makeLimiter(10, { keyGenerator: (req) => req.user.id }); // par utilisateur
 const launchPasswordLimiter = makeLimiter(10, { keyGenerator: (req) => req.user.id }); // par utilisateur
 
 app.post('/api/auth/login', authLimiter, async (req, res) => {
@@ -390,7 +453,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
         db.run(`INSERT INTO sessions VALUES (?,?,?,?,?)`, [token, adminUser.id, adminUser.name, adminUser.role, expires]);
         saveDB();
         res.cookie('session', token, sessionCookieOpts());
-        return res.json({ user: { id: adminUser.id, name: adminUser.name, email: adminUser.email, role: adminUser.role } });
+        return res.json({ user: { id: adminUser.id, name: adminUser.name, email: adminUser.email, role: adminUser.role, modules: modulesFor(adminUser) } });
       }
     }
     // Email de secours mais mot de passe incorrect → on continue vers le flux normal (renverra 401)
@@ -409,6 +472,12 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
   }
 
   // ─── 2FA ─────────────────────────────────────────────────────────────────
+  // Connexion par mot de passe (accès de secours) : réservée aux administrateurs. Les autres passent par Microsoft.
+  if (user.role !== 'admin') {
+    logAction(`[AUTH] Mot de passe refusé — connexion Microsoft obligatoire : ${user.email}`);
+    return res.status(403).json({ error: 'Connexion par Microsoft obligatoire pour ce compte' });
+  }
+
   if (get2FASender()) {
     const code = generate2FACode();
     otpStore.set(normalizeEmail(email), { code, expires: Date.now() + OTP_TTL_MS, attempts: 0, userId: user.id });
@@ -428,7 +497,69 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
   saveDB();
 
   res.cookie('session', token, sessionCookieOpts());
-  res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+  res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role, modules: modulesFor(user) } });
+});
+
+// ─── Connexion Microsoft (SSO) ────────────────────────────────────────────────
+// Seule voie de connexion normale. L'identité vient de Microsoft (MFA et accès conditionnel du tenant
+// inclus) ; le compte doit déjà exister dans l'app (Gestion du portail) et ne pas être désactivé.
+const ssoLimiter = makeLimiter(30);
+
+app.get('/api/auth/microsoft/login', ssoLimiter, (req, res) => {
+  // Développement (Graph simulé) : pas de Microsoft réel, on rejoue le retour avec le premier admin.
+  if (MOCK_GRAPH) return res.redirect('/api/auth/microsoft/callback?mock=1');
+  let started;
+  try {
+    started = sso.startAuth();
+  } catch (e) {
+    logAction(`[AUTH] SSO Microsoft non configuré : ${e.message}`);
+    return res.redirect('/login?error=config');
+  }
+  // État lié à ce navigateur : le retour de Microsoft n'est accepté que s'il correspond
+  res.cookie('ms_state', started.state, {
+    httpOnly: true, sameSite: 'lax', path: '/api/auth/microsoft', maxAge: 10 * 60 * 1000,
+    secure: process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production',
+  });
+  res.redirect(started.url);
+});
+
+app.get('/api/auth/microsoft/callback', ssoLimiter, async (req, res) => {
+  const fail = code => res.redirect(`/login?error=${code}`);
+  res.clearCookie('ms_state', { path: '/api/auth/microsoft' });
+  const db = await getDB();
+  let identity;
+
+  if (MOCK_GRAPH && req.query.mock === '1') {
+    const admin = dbRow(db, `SELECT email, name FROM users WHERE role='admin' AND status='active' ORDER BY created_at LIMIT 1`);
+    if (!admin) return fail('unauthorized');
+    identity = { email: admin.email, name: admin.name };
+  } else {
+    const { code, state, error } = req.query;
+    if (error) { logAction(`[AUTH] SSO Microsoft refusé : ${String(error).slice(0, 60)}`); return fail('refused'); }
+    if (typeof code !== 'string' || typeof state !== 'string' || req.cookies?.ms_state !== state) return fail('invalid');
+    try {
+      identity = await sso.finishAuth({ code, state });
+    } catch (e) {
+      logAction(`[AUTH] SSO Microsoft échec : ${e.message}`);
+      return fail('failed');
+    }
+  }
+
+  const user = dbRow(db, `SELECT * FROM users WHERE email=?`, [normalizeEmail(identity.email)]);
+  if (!user) { logAction(`[AUTH] SSO Microsoft — compte inconnu : ${identity.email}`); return fail('unauthorized'); }
+  if (user.status === 'disabled') { logAction(`[AUTH] SSO Microsoft — compte désactivé : ${user.email}`); return fail('disabled'); }
+  if (user.status === 'pending') {
+    // Invitation jamais acceptée : Microsoft vient de prouver l'identité, le compte peut être activé
+    db.run(`UPDATE users SET status='active', invite_token=NULL, invite_expires=NULL WHERE id=?`, [user.id]);
+  }
+
+  const token = uuidv4();
+  const expires = new Date(Date.now() + SESSION_TTL_DAYS * 86400000).toISOString();
+  db.run(`INSERT INTO sessions VALUES (?,?,?,?,?)`, [token, user.id, user.name, user.role, expires]);
+  saveDB();
+  logAction(`[AUTH] Connexion Microsoft réussie — ${user.email}`);
+  res.cookie('session', token, sessionCookieOpts());
+  res.redirect('/');
 });
 
 app.post('/api/auth/verify-2fa', twoFaLimiter, async (req, res) => {
@@ -453,7 +584,7 @@ app.post('/api/auth/verify-2fa', twoFaLimiter, async (req, res) => {
   saveDB();
   logAction(`[AUTH] Connexion 2FA réussie — ${user.email}`);
   res.cookie('session', token, sessionCookieOpts());
-  res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+  res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role, modules: modulesFor(user) } });
 });
 
 app.post('/api/auth/logout', async (req, res) => {
@@ -469,17 +600,6 @@ app.post('/api/auth/logout', async (req, res) => {
 
 app.get('/api/auth/me', auth, async (req, res) => {
   res.json({ user: req.user, mock: MOCK_GRAPH, isSuperAdmin: isSuperAdmin(req.user) });
-});
-
-app.post('/api/auth/verify-password', auth, verifyPasswordLimiter, async (req, res) => {
-  const { password } = req.body;
-  if (!password) return res.status(400).json({ error: 'Mot de passe requis' });
-  const db = await getDB();
-  const user = dbRow(db, `SELECT password_hash FROM users WHERE id=?`, [req.user.id]);
-  if (!user) return res.status(401).json({ error: 'Utilisateur introuvable' });
-  const ok = await verifyPassword(password, user.password_hash);
-  if (!ok) return res.status(401).json({ error: 'Mot de passe incorrect' });
-  res.json({ ok: true });
 });
 
 // Vérification du mot de passe de lancement IT (uniquement via .env — non modifiable via UI)
@@ -533,12 +653,12 @@ app.post('/api/auth/invite/:token', inviteLimiter, async (req, res) => {
   db.run(`INSERT INTO sessions VALUES (?,?,?,?,?)`, [sessionToken, user.id, user.name, user.role, expires]);
   saveDB();
   res.cookie('session', sessionToken, sessionCookieOpts());
-  res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+  res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role, modules: modulesFor(user) } });
 });
 
 // ─── Graph proxy routes ────────────────────────────────────────────────────────
 
-app.get('/api/graph/groups', auth, async (req, res) => {
+app.get('/api/graph/groups', auth, requireModule('onboarding'), async (req, res) => {
   try {
     const search = (req.query.search || '').trim();
     const groups = await listGroups(search);
@@ -551,7 +671,7 @@ app.get('/api/graph/groups', auth, async (req, res) => {
 
 // Aperçu des groupes SharePoint/communication qui seront ajoutés pour un poste/pays/ville
 // donné — sans rien exécuter. Utilisé pour confirmer avant une mutation ou un onboarding manuel.
-app.get('/api/onboardings/resolve-groups', auth, async (req, res) => {
+app.get('/api/onboardings/resolve-groups', auth, requireModule('onboarding'), async (req, res) => {
   const { jobRole, location, city, excludeGroupId } = req.query;
   const tooLong = (s, n) => typeof s === 'string' && s.length > n;
   if (tooLong(jobRole, 128) || tooLong(location, 64) || tooLong(city, 128))
@@ -571,7 +691,7 @@ app.get('/api/onboardings/resolve-groups', auth, async (req, res) => {
   }
 });
 
-app.get('/api/graph/groups/:id', auth, async (req, res) => {
+app.get('/api/graph/groups/:id', auth, requireModule('onboarding'), async (req, res) => {
   try {
     const group = await getGroupById(req.params.id);
     res.json(group);
@@ -581,7 +701,7 @@ app.get('/api/graph/groups/:id', auth, async (req, res) => {
   }
 });
 
-app.get('/api/graph/licenses', auth, async (req, res) => {
+app.get('/api/graph/licenses', auth, requireModule('onboarding'), async (req, res) => {
   try {
     const licenses = await listAvailableLicenses();
     res.json(licenses);
@@ -756,42 +876,61 @@ async function getUserGroups(userId) {
 // Groupes → Boîtes partagées). Ce n'est pas un ajout de membre Graph mais une permission posée
 // sur la boîte elle-même, via l'action Exchange AddMailboxPermission. `retry` : à l'onboarding,
 // la boîte du nouvel employé peut mettre quelques minutes à exister côté Exchange.
-async function applyGlobalSharedMailboxes(userPrincipalName, logPrefix, { retry = false } = {}) {
+// Donne l'accès (permission Exchange AddMailboxPermission) d'un utilisateur à une boîte partagée.
+// `delays` : pauses (en s) avant de réessayer quand Exchange ne connaît pas encore le compte.
+// Retourne { status: 'granted' | 'already' | 'error', error? }.
+async function grantMailboxAccess(userPrincipalName, mailboxEmail, name, logPrefix, delays = []) {
+  const notReady = /couldn'?t be found|could not find|not found|recipient/i;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await runExchangeScript({ Action: 'AddMailboxPermission', Identity: mailboxEmail, User: userPrincipalName });
+      logAction(`${logPrefix} ✅ Accès à la boîte partagée "${name}"`);
+      return { status: 'granted' };
+    } catch (e) {
+      if (/already/i.test(e.message || '')) {
+        logAction(`${logPrefix} ⏭️ Accès déjà présent sur la boîte partagée "${name}"`);
+        return { status: 'already' };
+      }
+      if (attempt < delays.length && notReady.test(e.message || '')) {
+        logAction(`${logPrefix} ⏳ Exchange pas encore prêt pour "${name}" — retry ${attempt + 1}/${delays.length} dans ${delays[attempt]}s...`);
+        await sleep(delays[attempt] * 1000);
+        continue;
+      }
+      logAction(`${logPrefix} ❌ Boîte partagée "${name}" : ${e.message}`);
+      return { status: 'error', error: e.message };
+    }
+  }
+}
+
+// Boîtes de l'employé = boîtes globales (tout le monde) + boîtes par département dont le filtre
+// (poste, pays) correspond — même règle que les groupes de communication.
+async function applySharedMailboxes(userPrincipalName, logPrefix, { retry = false, jobRole = '', location = '' } = {}) {
   const db = await getDB();
-  let mailboxes = [];
-  try { mailboxes = JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key='global_shared_mailboxes'`)?.value || '[]'); } catch (_) {}
-  mailboxes = mailboxes.filter(m => m && m.email);
+  const read = key => { try { return JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key=?`, [key])?.value || '[]'); } catch (_) { return []; } };
+  // Global = tout le monde sans exception. Sinon : le pays doit correspondre, puis, si des
+  // départements sont précisés, le poste aussi (sans département : tout le pays).
+  const deptMatch = m => {
+    if (m.location === 'ALL') return true;
+    if (!(m.countries || []).includes(location)) return false;
+    const depts = m.departments || [];
+    return depts.length === 0 || depts.includes(jobRole);
+  };
+  const byEmail = new Map();
+  for (const m of [...read('global_shared_mailboxes'), ...read('department_shared_mailboxes').filter(deptMatch)]) {
+    if (m && typeof m.email === 'string' && m.email && !byEmail.has(m.email.toLowerCase())) byEmail.set(m.email.toLowerCase(), m);
+  }
+  const mailboxes = [...byEmail.values()];
   if (!mailboxes.length) return 0;
   if (MOCK_GRAPH) {
-    logAction(`${logPrefix} ⏭️ Boîtes partagées globales — ignorées en mode mock`);
+    logAction(`${logPrefix} ⏭️ Boîtes partagées — ignorées en mode mock`);
     return 0;
   }
 
-  const notReady = /couldn'?t be found|could not find|not found|recipient/i;
   const delays = retry ? [30, 60, 120] : [];
   let granted = 0;
   for (const m of mailboxes) {
-    const name = m.label || m.email;
-    for (let attempt = 0; ; attempt++) {
-      try {
-        await runExchangeScript({ Action: 'AddMailboxPermission', Identity: m.email, User: userPrincipalName });
-        logAction(`${logPrefix} ✅ Accès à la boîte partagée "${name}"`);
-        granted++;
-        break;
-      } catch (e) {
-        if (/already/i.test(e.message || '')) {
-          logAction(`${logPrefix} ⏭️ Accès déjà présent sur la boîte partagée "${name}"`);
-          break;
-        }
-        if (attempt < delays.length && notReady.test(e.message || '')) {
-          logAction(`${logPrefix} ⏳ Exchange pas encore prêt pour "${name}" — retry ${attempt + 1}/${delays.length} dans ${delays[attempt]}s...`);
-          await sleep(delays[attempt] * 1000);
-        } else {
-          logAction(`${logPrefix} ❌ Boîte partagée "${name}" : ${e.message}`);
-          break;
-        }
-      }
-    }
+    const r = await grantMailboxAccess(userPrincipalName, m.email, m.label || m.name || m.email, logPrefix, delays);
+    if (r.status === 'granted') granted++;
   }
   return granted;
 }
@@ -882,6 +1021,24 @@ async function assignPrimaryGroupAndSpComm({ adUser, groupId, groupName, jobRole
   return { skipped, spGroupCount };
 }
 
+// Si la phase 2 (groupes/GitHub/Teams) plante, la ligne resterait en 'partial' pour toujours :
+// on la passe en échec avec la marche à suivre (le compte et la licence, eux, sont bien créés).
+async function markBackgroundFailed(id, err) {
+  logAction(`[${id}] ❌ Background error : ${err.message}`);
+  try {
+    const db = await getDB();
+    // Message générique : le détail technique reste dans les logs, pas dans l'UI.
+    db.run(
+      `UPDATE onboardings SET status='failed', error_message=? WHERE id=? AND status='partial'`,
+      ['Phase groupes/GitHub en erreur — compte et licence créés ; compléter via « Onboarding manuel »', id]
+    );
+    db.run(`UPDATE onboarding_steps SET status='failed', error_message='Interrompu' WHERE onboarding_id=? AND status='running'`, [id]);
+    saveDB();
+  } catch (e) {
+    console.error('[markBackgroundFailed]', e);
+  }
+}
+
 async function executeOnboardingBackground(id, adUserId, userPrincipalName, step4Enabled) {
   const db = await getDB();
   const onb = dbRow(db, `SELECT * FROM onboardings WHERE id=?`, [id]);
@@ -902,7 +1059,7 @@ async function executeOnboardingBackground(id, adUserId, userPrincipalName, step
       excludeGroupId: onb.group_id,
     });
     await applySharePointCommGroups(spGroups, adUserId, userPrincipalName, `[${id}] [BG]`);
-    await applyGlobalSharedMailboxes(userPrincipalName, `[${id}] [BG]`, { retry: true });
+    await applySharedMailboxes(userPrincipalName, `[${id}] [BG]`, { retry: true, jobRole: onb.job_role || '', location: onb.location || '' });
     updateStep(db, id, 4, 'done');
     saveDB();
   } else {
@@ -1062,9 +1219,7 @@ async function executeOnboarding(id) {
     const _bgUpn    = adUser.userPrincipalName;
     const _bgStep4  = step4Enabled;
     setTimeout(() => {
-      executeOnboardingBackground(id, _bgUserId, _bgUpn, _bgStep4).catch(err =>
-        logAction(`[${id}] ❌ Background error : ${err.message}`)
-      );
+      executeOnboardingBackground(id, _bgUserId, _bgUpn, _bgStep4).catch(err => markBackgroundFailed(id, err));
     }, 60 * 1000);
 
   } catch (err) {
@@ -1099,7 +1254,7 @@ async function executeOnboarding(id) {
 
 // ─── Manual onboarding (compte M365 existant) ────────────────────────────────
 
-app.post('/api/onboardings/manual', auth, requireRole('admin'), async (req, res) => {
+app.post('/api/onboardings/manual', auth, requireRole('admin'), requireModule('onboarding'), async (req, res) => {
   const { email, groupId, groupName, jobRole, location, city } = req.body;
 
   if (!isValidEmail(email?.trim()))
@@ -1144,8 +1299,8 @@ app.post('/api/onboardings/manual', auth, requireRole('admin'), async (req, res)
     return res.status(e.httpStatus || 500).json({ error: e.message });
   }
 
-  // 3b. Boîtes partagées globales (permission Exchange)
-  await applyGlobalSharedMailboxes(email.trim(), '[manual]');
+  // 3b. Boîtes partagées globales + par département (permission Exchange)
+  await applySharedMailboxes(email.trim(), '[manual]', { jobRole: jobRole?.trim() || '', location: location?.trim() || '' });
 
   // 4. GitHub invitation
   const { invited: githubInvited } = await sendGithubInvite(email.trim(), '[manual]');
@@ -1158,7 +1313,7 @@ app.post('/api/onboardings/manual', auth, requireRole('admin'), async (req, res)
 // automatiquement via ses groupes actuels — jamais les groupes globaux, valables pour tout le
 // monde) et l'ajoute aux groupes de son nouveau poste/pays, comme un onboarding normal.
 
-app.get('/api/onboardings/transfer/groups', auth, requireRole('admin'), async (req, res) => {
+app.get('/api/onboardings/transfer/groups', auth, requireRole('admin'), requireModule('onboarding'), async (req, res) => {
   const email = req.query.email?.trim();
   if (!isValidEmail(email)) return res.status(400).json({ error: 'Email invalide' });
   const { graphFetch } = require('./lib/graph');
@@ -1177,7 +1332,7 @@ app.get('/api/onboardings/transfer/groups', auth, requireRole('admin'), async (r
   }
 });
 
-app.post('/api/onboardings/transfer', auth, requireRole('admin'), async (req, res) => {
+app.post('/api/onboardings/transfer', auth, requireRole('admin'), requireModule('onboarding'), async (req, res) => {
   const { email, groupId, groupName, jobRole, location, city } = req.body;
 
   if (!isValidEmail(email?.trim()))
@@ -1248,7 +1403,7 @@ app.post('/api/onboardings/transfer', auth, requireRole('admin'), async (req, re
 
 // ─── Onboarding routes ────────────────────────────────────────────────────────
 
-app.get('/api/onboardings', auth, async (req, res) => {
+app.get('/api/onboardings', auth, requireModule('onboarding'), async (req, res) => {
   const db = await getDB();
   const { status, limit } = req.query;
   const isAdmin = req.user.role === 'admin';
@@ -1266,7 +1421,7 @@ app.get('/api/onboardings', auth, async (req, res) => {
   res.json(rows);
 });
 
-app.get('/api/onboardings/:id', auth, async (req, res) => {
+app.get('/api/onboardings/:id', auth, requireModule('onboarding'), async (req, res) => {
   if (!isValidUUID(req.params.id)) return res.status(400).json({ error: 'ID invalide' });
   const db = await getDB();
   const onb = dbRow(db, `SELECT * FROM onboardings WHERE id=?`, [req.params.id]);
@@ -1304,7 +1459,7 @@ app.delete('/api/onboardings/:id', auth, requireSuperAdmin, async (req, res) => 
   res.json({ ok: true });
 });
 
-app.post('/api/onboardings', auth, async (req, res) => {
+app.post('/api/onboardings', auth, requireModule('onboarding'), async (req, res) => {
   const { firstName, lastName, email, jobRole, location, city, groupId, groupName, skuId, licenseName } = req.body;
   if (!firstName?.trim() || !lastName?.trim())
     return res.status(400).json({ error: 'Prénom et nom requis' });
@@ -1427,7 +1582,7 @@ app.post('/api/onboardings', auth, async (req, res) => {
 
 // ─── Stats (dashboard) ────────────────────────────────────────────────────────
 
-app.get('/api/stats', auth, async (req, res) => {
+app.get('/api/stats', auth, requireModule('onboarding'), async (req, res) => {
   const db = await getDB();
   const month = new Date().toISOString().slice(0, 7);
 
@@ -1451,7 +1606,7 @@ app.get('/api/stats', auth, async (req, res) => {
 
 // ─── Admin: Organisation settings ────────────────────────────────────────────
 
-app.get('/api/admin/settings', auth, requireRole('admin'), async (req, res) => {
+app.get('/api/admin/settings', auth, requireRole('admin'), requireModule('onboarding'), async (req, res) => {
   const db = await getDB();
   const rows = dbRows(db, `SELECT key, value FROM settings WHERE key IN (${Object.keys(SETTINGS_MAP).map(() => '?').join(',')})`, Object.keys(SETTINGS_MAP));
   const dbMap = Object.fromEntries(rows.map(r => [r.key, r.value]));
@@ -1466,6 +1621,7 @@ app.get('/api/admin/settings', auth, requireRole('admin'), async (req, res) => {
     force_change_password:         dbMap.force_change_password         || process.env.FORCE_CHANGE_PASSWORD || 'true',
     sharepoint_global_groups:  JSON.parse(dbMap.sharepoint_global_groups  || process.env.SP_GLOBAL_GROUPS              || '[]'),
     global_shared_mailboxes:   JSON.parse(dbMap.global_shared_mailboxes   || process.env.GLOBAL_SHARED_MAILBOXES       || '[]'),
+    department_shared_mailboxes: JSON.parse(dbMap.department_shared_mailboxes || process.env.DEPARTMENT_SHARED_MAILBOXES || '[]'),
     sharepoint_country_groups: JSON.parse(dbMap.sharepoint_country_groups || process.env.SP_COUNTRY_GROUPS             || '[]'),
     communication_groups:      JSON.parse(dbMap.communication_groups      || process.env.SP_COMMUNICATION_GROUPS       || '[]'),
     pointage_assignments:      JSON.parse(dbMap.pointage_assignments      || process.env.SP_POINTAGE_ASSIGNMENTS            || '[]'),
@@ -1501,11 +1657,20 @@ function validateSettingValue(key, v) {
         }
       }
     }
-    if (key === 'global_shared_mailboxes') {
+    if (key === 'global_shared_mailboxes' || key === 'department_shared_mailboxes') {
       for (const m of v) {
         if (!m || typeof m.email !== 'string' || m.email.length > 254 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(m.email))
           return `adresse de boîte partagée invalide : ${String(m && m.email).slice(0, 60)}`;
-        if (typeof m.label === 'string' && m.label.length > 256) return 'champ "label" trop long';
+        for (const f of ['label', 'name']) {
+          if (typeof m[f] === 'string' && m[f].length > 256) return `champ "${f}" trop long`;
+        }
+        for (const f of ['countries', 'departments']) {
+          if (m[f] != null && (!Array.isArray(m[f]) || m[f].length > 50 || m[f].some(x => typeof x !== 'string' || x.length > 128)))
+            return `champ "${f}" invalide`;
+        }
+        if (m.location != null && m.location !== 'ALL' && m.location !== 'DEFAULT') return 'champ "location" invalide';
+        if (key === 'department_shared_mailboxes' && m.location === 'DEFAULT' && !(Array.isArray(m.countries) && m.countries.length > 0))
+          return 'une boîte non globale doit avoir au moins un pays';
       }
     }
     if (JSON.stringify(v).length > 256 * 1024) return 'payload trop volumineux';
@@ -1517,7 +1682,7 @@ function validateSettingValue(key, v) {
   return null;
 }
 
-app.put('/api/admin/settings', auth, requireRole('admin'), async (req, res) => {
+app.put('/api/admin/settings', auth, requireRole('admin'), requireModule('onboarding'), async (req, res) => {
   const db = await getDB();
   // Valider AVANT toute écriture (rejet atomique)
   for (const [k, v] of Object.entries(req.body)) {
@@ -1545,14 +1710,152 @@ app.put('/api/admin/settings', auth, requireRole('admin'), async (req, res) => {
   res.json({ ok: true });
 });
 
-// ─── Admin: Users ─────────────────────────────────────────────────────────────
+// ─── Monitoring : usage des outils IA ─────────────────────────────────────────
+// Le workflow n8n « superviser les IA » pousse chaque mois ses résultats (Claude, ChatGPT,
+// Fireflies) ; l'app les stocke et les classe (statut, niveau d'alerte, pays) pour l'affichage.
 
-app.get('/api/admin/users', auth, requireRole('admin'), async (req, res) => {
+const aiUsage = require('./lib/aiUsage');
+const spSync = require('./lib/sharepointSync');
+
+function monitoringIngestConfigured() {
+  const t = process.env.MONITORING_INGEST_TOKEN;
+  return !!t && t.length >= 24;
+}
+
+// Appel machine-à-machine (pas de cookie de session) : authentifié par un jeton partagé défini
+// uniquement dans .env. Désactivé tant que le jeton n'est pas configuré (24 caractères minimum).
+// Pas de limiteur par IP volontairement : derrière un reverse proxy toutes les requêtes partagent
+// la même IP, et un anonyme pourrait alors épuiser le quota et bloquer l'envoi légitime de n8n.
+// Un jeton de 24+ caractères rend le brute-force irréaliste.
+app.post('/api/monitoring/ai-usage/ingest', async (req, res) => {
+  if (!monitoringIngestConfigured()) return res.status(503).json({ error: 'Ingestion non configurée' });
+  const bearer = /^Bearer (.+)$/.exec(req.get('authorization') || '');
+  const digest = s => createHash('sha256').update(String(s)).digest();
+  if (!bearer || !timingSafeEqual(digest(bearer[1]), digest(process.env.MONITORING_INGEST_TOKEN))) {
+    logAction(`[monitoring] Ingestion refusée — jeton invalide`);
+    return res.status(401).json({ error: 'Non autorisé' });
+  }
+  let parsed;
+  try {
+    parsed = aiUsage.parsePayload(req.body);
+  } catch (e) {
+    return res.status(e.httpStatus || 400).json({ error: e.message });
+  }
   const db = await getDB();
-  res.json(dbRows(db, `SELECT id, name, email, role, status, created_at FROM users ORDER BY name`));
+  aiUsage.ingest(db, parsed, { isMock: MOCK_GRAPH });
+  saveDB();
+  logAction(`[monitoring] ${parsed.tool} ${parsed.month} : ${parsed.rows.length} ligne(s) reçue(s)`);
+  res.json({ ok: true, tool: parsed.tool, month: parsed.month, rows: parsed.rows.length });
 });
 
-app.post('/api/admin/users', auth, requireRole('admin'), async (req, res) => {
+app.get('/api/monitoring/ai-usage', auth, requireModule('monitoring'), async (req, res) => {
+  const db = await getDB();
+  const data = aiUsage.dashboard(db, { isMock: MOCK_GRAPH });
+  // Configuration technique (jeton, SharePoint, démo) : réservée aux administrateurs.
+  if (req.user.role !== 'admin') return res.json({ ...data, readOnly: true });
+  res.json({
+    ...data,
+    ingestConfigured: monitoringIngestConfigured(),
+    sharepoint: { ...spSync.status(), settings: spSync.settingsView() },
+    demoAvailable: MOCK_GRAPH,
+  });
+});
+
+// Relit les rapports Excel dans SharePoint (lecture seule, app Entra dédiée) et met à jour le monitoring.
+async function syncMonitoringFromSharePoint(trigger) {
+  const db = await getDB();
+  const out = await spSync.syncAll(db, { isMock: MOCK_GRAPH });
+  saveDB();
+  for (const r of out.results) {
+    logAction(r.ok ? `[monitoring] SharePoint (${trigger}) ${r.tool} : ${r.months.length} mois synchronisé(s)` : `[monitoring] SharePoint (${trigger}) ${r.tool} : échec — ${r.error}`);
+  }
+  return out;
+}
+
+app.put('/api/monitoring/ai-usage/sharepoint-settings', auth, requireRole('admin'), requireModule('monitoring'), async (req, res) => {
+  let parsed;
+  try {
+    parsed = spSync.parseSettings(req.body);
+  } catch (e) {
+    return res.status(e.httpStatus || 400).json({ error: e.message });
+  }
+  const db = await getDB();
+  db.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('monitoring_sharepoint', ?)", [JSON.stringify(parsed)]);
+  saveDB();
+  spSync.setOverride(parsed);
+  logAction(`[monitoring] Emplacement SharePoint modifié par ${req.user.email}`);
+  res.json({ ok: true, settings: spSync.settingsView() });
+});
+
+const monitoringSyncLimiter = makeLimiter(10, { keyGenerator: (req) => req.user.id });
+app.post('/api/monitoring/ai-usage/sync', auth, requireRole('admin'), requireModule('monitoring'), monitoringSyncLimiter, async (req, res) => {
+  if (MOCK_GRAPH) return res.status(403).json({ error: 'Indisponible en mode développement (Graph simulé)' });
+  try {
+    res.json(await syncMonitoringFromSharePoint(req.user.email));
+  } catch (e) {
+    res.status(e.httpStatus || 500).json({ error: e.httpStatus ? e.message : 'Synchronisation impossible' });
+  }
+});
+
+app.put('/api/monitoring/ai-usage/prices', auth, requireRole('admin'), requireModule('monitoring'), async (req, res) => {
+  const db = await getDB();
+  let prices;
+  try {
+    prices = aiUsage.savePrices(db, req.body);
+  } catch (e) {
+    return res.status(e.httpStatus || 400).json({ error: e.message });
+  }
+  saveDB();
+  logAction(`[monitoring] Prix des licences mis à jour par ${req.user.email}`);
+  res.json({ ok: true, prices });
+});
+
+app.get('/api/monitoring/ai-usage/summary', auth, requireModule('monitoring'), async (req, res) => {
+  const db = await getDB();
+  res.json(aiUsage.summary(db, { isMock: MOCK_GRAPH }));
+});
+
+// Données fictives, uniquement en mode développement (MOCK_GRAPH) — jamais sur la prod.
+app.post('/api/monitoring/ai-usage/demo', auth, requireRole('admin'), requireModule('monitoring'), async (req, res) => {
+  if (!MOCK_GRAPH) return res.status(403).json({ error: 'Disponible uniquement en mode développement' });
+  const db = await getDB();
+  const rows = aiUsage.seedDemo(db);
+  saveDB();
+  res.json({ ok: true, rows });
+});
+
+// ─── Admin: Users ─────────────────────────────────────────────────────────────
+
+app.get('/api/admin/users', auth, requireRole('admin'), requireSuperAdmin, async (req, res) => {
+  const db = await getDB();
+  const users = dbRows(db, `SELECT id, name, email, role, status, created_at, modules FROM users ORDER BY name`);
+  res.json(users.map(({ modules, ...u }) => ({
+    ...u,
+    modules: modulesFor({ role: u.role, email: u.email, modules }),
+    superAdmin: isSuperAdmin(u),
+  })));
+});
+
+// Accès aux modules du portail, utilisateur par utilisateur (les administrateurs ont accès à tout).
+app.put('/api/admin/users/:id/modules', auth, requireRole('admin'), requireSuperAdmin, async (req, res) => {
+  if (!isValidUUID(req.params.id)) return res.status(400).json({ error: 'ID invalide' });
+  let modules;
+  try {
+    modules = parseModules(req.body?.modules);
+  } catch (e) {
+    return res.status(e.httpStatus || 400).json({ error: e.message });
+  }
+  const db = await getDB();
+  const target = dbRow(db, `SELECT id, email, role FROM users WHERE id=?`, [req.params.id]);
+  if (!target) return res.status(404).json({ error: 'Utilisateur introuvable' });
+  if (isSuperAdmin(target)) return res.status(400).json({ error: 'Un super administrateur a toujours accès à tous les modules' });
+  db.run(`UPDATE users SET modules=? WHERE id=?`, [JSON.stringify(modules), target.id]);
+  saveDB();
+  logAction(`[portail] Accès de ${target.email} : ${modules.join(', ') || 'aucun module'} (par ${req.user.email})`);
+  res.json({ id: target.id, modules });
+});
+
+app.post('/api/admin/users', auth, requireRole('admin'), requireSuperAdmin, async (req, res) => {
   const { name, email, role, password } = req.body;
   if (!name || !email) return res.status(400).json({ error: 'Nom et email requis' });
   const wantRole = role || 'operator';
@@ -1565,75 +1868,35 @@ app.post('/api/admin/users', auth, requireRole('admin'), async (req, res) => {
   const existing = dbRow(db, `SELECT id FROM users WHERE email=?`, [normalizeEmail(email)]);
   if (existing) return res.status(400).json({ error: 'Email déjà utilisé' });
 
+  // Modules du portail accordés dès la création (absent = accès par défaut ; ignoré pour un admin)
+  let modulesJson = null;
+  if (req.body.modules !== undefined && wantRole !== 'admin') {
+    try { modulesJson = JSON.stringify(parseModules(req.body.modules)); }
+    catch (e) { return res.status(e.httpStatus || 400).json({ error: e.message }); }
+  }
+
   const id = uuidv4();
   let hash = null;
-  let inviteToken = null;
-  let inviteExpires = null;
 
   if (password) {
     const pwErr = validatePassword(password);
     if (pwErr) return res.status(400).json({ error: pwErr });
     hash = await hashPassword(password);
-  } else {
-    inviteToken = uuidv4();
-    inviteExpires = new Date(Date.now() + INVITE_TTL_DAYS * 86400000).toISOString();
   }
+  // Sans mot de passe : compte actif, la personne se connecte par Microsoft.
 
   db.run(
-    `INSERT INTO users (id, name, email, role, password_hash, invite_token, invite_expires, status) VALUES (?,?,?,?,?,?,?,?)`,
-    [id, name, normalizeEmail(email), wantRole, hash, inviteToken, inviteExpires, hash ? 'active' : 'pending']
+    `INSERT INTO users (id, name, email, role, password_hash, status, modules) VALUES (?,?,?,?,?,?,?)`,
+    [id, name, normalizeEmail(email), wantRole, hash, 'active', modulesJson]
   );
   saveDB();
 
   const user = dbRow(db, `SELECT id, name, email, role, status FROM users WHERE id=?`, [id]);
 
-  if (inviteToken && get2FASender()) {
-    const inviteUrl = `${process.env.FRONTEND_URL || 'http://localhost:5174'}/invite/${inviteToken}`;
-    try {
-      await getSmtpTransport().sendMail({
-        from: get2FASender(),
-        to: normalizeEmail(email),
-        subject: 'Votre invitation — Onboarding M365 Captivea',
-        html: `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;padding:0;background:#f1f5f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
-<table width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9;padding:48px 16px">
-  <tr><td align="center">
-    <table width="100%" cellpadding="0" cellspacing="0" style="max-width:460px;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.07)">
-      <tr><td style="background:linear-gradient(135deg,#4f46e5 0%,#6366f1 100%);padding:36px 40px 28px;text-align:center">
-        <div style="display:inline-block;background:rgba(255,255,255,.15);border-radius:12px;padding:10px 18px;margin-bottom:16px">
-          <span style="color:#ffffff;font-size:22px;font-weight:700;letter-spacing:-.5px">Captivea</span>
-        </div>
-        <p style="margin:0;color:rgba(255,255,255,.85);font-size:13px;letter-spacing:.5px;text-transform:uppercase">Onboarding M365</p>
-      </td></tr>
-      <tr><td style="padding:40px">
-        <p style="margin:0 0 8px;color:#1e293b;font-size:18px;font-weight:600">Bienvenue, ${escapeHtml(name)} 👋</p>
-        <p style="margin:0 0 24px;color:#64748b;font-size:14px;line-height:1.7">Vous avez été invité à rejoindre la plateforme <strong>Onboarding M365</strong> de Captivea. Cliquez sur le bouton ci-dessous pour créer votre mot de passe et activer votre compte.</p>
-        <div style="text-align:center;margin:28px 0">
-          <a href="${inviteUrl}" style="display:inline-block;background:#4f46e5;color:#ffffff;text-decoration:none;font-size:15px;font-weight:600;padding:14px 32px;border-radius:10px;letter-spacing:-.2px">Activer mon compte →</a>
-        </div>
-        <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:8px;padding:14px 16px;margin:0 0 24px">
-          <p style="margin:0 0 6px;color:#94a3b8;font-size:11px;text-transform:uppercase;letter-spacing:.5px">Ou copiez ce lien</p>
-          <p style="margin:0;color:#4f46e5;font-size:12px;word-break:break-all">${inviteUrl}</p>
-        </div>
-        <p style="margin:0;color:#94a3b8;font-size:12px;line-height:1.7;border-top:1px solid #f1f5f9;padding-top:20px">Ce lien expire dans <strong style="color:#64748b">${INVITE_TTL_DAYS} jours</strong>. Si vous n'attendiez pas cette invitation, ignorez cet email.</p>
-      </td></tr>
-      <tr><td style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:16px 40px;text-align:center">
-        <p style="margin:0;color:#cbd5e1;font-size:11px">Captivea · Message automatique — ne pas répondre</p>
-      </td></tr>
-    </table>
-  </td></tr>
-</table>
-</body></html>`,
-      });
-      logAction(`[INVITE] Email envoyé à ${normalizeEmail(email)}`);
-    } catch (e) {
-      logAction(`[INVITE] Échec envoi email : ${e.message}`);
-    }
-  }
-
-  res.status(201).json({ user, invite_token: inviteToken });
+  res.status(201).json({ user });
 });
 
-app.put('/api/admin/users/:id', auth, requireRole('admin'), async (req, res) => {
+app.put('/api/admin/users/:id', auth, requireRole('admin'), requireSuperAdmin, async (req, res) => {
   if (!isValidUUID(req.params.id)) return res.status(400).json({ error: 'ID invalide' });
   const { name, email, role, status } = req.body;
   if (email != null && !isValidEmail(normalizeEmail(email)))
@@ -1669,7 +1932,7 @@ app.put('/api/admin/users/:id', auth, requireRole('admin'), async (req, res) => 
   res.json(dbRow(db, `SELECT id, name, email, role, status FROM users WHERE id=?`, [req.params.id]));
 });
 
-app.delete('/api/admin/users/:id', auth, requireRole('admin'), async (req, res) => {
+app.delete('/api/admin/users/:id', auth, requireRole('admin'), requireSuperAdmin, async (req, res) => {
   if (!isValidUUID(req.params.id)) return res.status(400).json({ error: 'ID invalide' });
   if (req.params.id === req.user.id)
     return res.status(400).json({ error: 'Impossible de supprimer son propre compte' });
@@ -1683,7 +1946,7 @@ app.delete('/api/admin/users/:id', auth, requireRole('admin'), async (req, res) 
   res.json({ ok: true });
 });
 
-app.put('/api/admin/users/:id/reset-password', auth, requireRole('admin'), async (req, res) => {
+app.put('/api/admin/users/:id/reset-password', auth, requireRole('admin'), requireSuperAdmin, async (req, res) => {
   if (!isValidUUID(req.params.id)) return res.status(400).json({ error: 'ID invalide' });
   const { password } = req.body;
   const pwErr = validatePassword(password);
@@ -1708,9 +1971,13 @@ const SECURITY_PATTERNS = [
   { re: /Invitation déjà consommée/,                  type: 'danger',  label: 'Replay invitation' },
   { re: /Tentative d'acceptation d'invitation avec token invalide/, type: 'danger', label: 'Token invalide' },
   { re: /Mot de passe réinitialisé/,                  type: 'info',    label: 'Reset mot de passe' },
+  { re: /\[monitoring\] Ingestion refusée/,           type: 'danger',  label: 'Ingestion monitoring refusée' },
+  { re: /\[AUTH\] SSO Microsoft (échec|refusé|non configuré|— compte)/, type: 'danger', label: 'Échec connexion Microsoft' },
+  { re: /\[AUTH\] Mot de passe refusé — connexion Microsoft obligatoire/, type: 'warning', label: 'Mot de passe refusé (SSO obligatoire)' },
+  { re: /\[portail\] Accès de /,                      type: 'info',    label: 'Accès aux modules modifié' },
 ];
 
-app.get('/api/admin/security-events', auth, requireRole('admin'), (req, res) => {
+app.get('/api/admin/security-events', auth, requireRole('admin'), requireModule('onboarding'), (req, res) => {
   try {
     if (!fs.existsSync(LOG_FILE)) return res.json([]);
     const lines = fs.readFileSync(LOG_FILE, 'utf8').split('\n').filter(Boolean);
@@ -1729,7 +1996,7 @@ app.get('/api/admin/security-events', auth, requireRole('admin'), (req, res) => 
   }
 });
 
-app.get('/api/admin/security-events/archive', auth, requireRole('admin'), (req, res) => {
+app.get('/api/admin/security-events/archive', auth, requireRole('admin'), requireModule('onboarding'), (req, res) => {
   try {
     const content = fs.existsSync(LOG_FILE) ? fs.readFileSync(LOG_FILE, 'utf8') : '';
     const date = new Date().toISOString().slice(0, 10);
@@ -1742,7 +2009,7 @@ app.get('/api/admin/security-events/archive', auth, requireRole('admin'), (req, 
   }
 });
 
-app.delete('/api/admin/security-events', auth, requireRole('admin'), (req, res) => {
+app.delete('/api/admin/security-events', auth, requireRole('admin'), requireModule('onboarding'), (req, res) => {
   try {
     fs.writeFileSync(LOG_FILE, '');
     logAction(`Journal de sécurité effacé par ${req.user.email}`);
@@ -1752,7 +2019,7 @@ app.delete('/api/admin/security-events', auth, requireRole('admin'), (req, res) 
   }
 });
 
-app.delete('/api/admin/security-events/selection', auth, requireRole('admin'), (req, res) => {
+app.delete('/api/admin/security-events/selection', auth, requireRole('admin'), requireModule('onboarding'), (req, res) => {
   const { timestamps } = req.body || {};
   if (!Array.isArray(timestamps) || timestamps.length === 0)
     return res.status(400).json({ error: 'Aucune sélection' });
@@ -2050,7 +2317,7 @@ async function executeOffboarding(jobId) {
   }
 }
 
-app.post('/api/offboarding', auth, requireRole('admin'), async (req, res) => {
+app.post('/api/offboarding', auth, requireRole('admin'), requireModule('onboarding'), async (req, res) => {
   const { targetEmail, accessTo, transferEmails } = req.body || {};
   if (!isValidEmail(targetEmail)) return res.status(400).json({ error: 'Email invalide' });
   if (accessTo && !isValidEmail(accessTo)) return res.status(400).json({ error: 'Email "Donner accès à" invalide' });
@@ -2074,7 +2341,7 @@ app.post('/api/offboarding', auth, requireRole('admin'), async (req, res) => {
   res.json({ id: jobId });
 });
 
-app.get('/api/offboarding/:id', auth, requireRole('admin'), (req, res) => {
+app.get('/api/offboarding/:id', auth, requireRole('admin'), requireModule('onboarding'), (req, res) => {
   const { id } = req.params;
   if (!isValidUUID(id)) return res.status(400).json({ error: 'ID invalide' });
   const job = offboardingJobs.get(id);
@@ -2082,7 +2349,7 @@ app.get('/api/offboarding/:id', auth, requireRole('admin'), (req, res) => {
   res.json(job);
 });
 
-app.post('/api/offboarding/:id/confirm', auth, requireRole('admin'), (req, res) => {
+app.post('/api/offboarding/:id/confirm', auth, requireRole('admin'), requireModule('onboarding'), (req, res) => {
   const { id } = req.params;
   if (!isValidUUID(id)) return res.status(400).json({ error: 'ID invalide' });
   const job = offboardingJobs.get(id);
@@ -2096,10 +2363,6 @@ app.post('/api/offboarding/:id/confirm', auth, requireRole('admin'), (req, res) 
   res.json({ ok: true });
 });
 
-function escapeHtml(s) {
-  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-}
-
 // Échappe les métacaractères PowerShell pour les chaînes double-quotées : ` $ "
 function escapePsDQ(s) {
   return String(s ?? '').replace(/`/g, '``').replace(/\$/g, '`$').replace(/"/g, '`"').replace(/\r?\n/g, ' ');
@@ -2109,7 +2372,7 @@ function escapePsSQ(s) {
   return String(s ?? '').replace(/'/g, "''");
 }
 
-app.get('/api/offboarding/:id/script', auth, requireRole('admin'), (req, res) => {
+app.get('/api/offboarding/:id/script', auth, requireRole('admin'), requireModule('onboarding'), (req, res) => {
   const { id } = req.params;
   if (!isValidUUID(id)) return res.status(400).json({ error: 'ID invalide' });
   const job = offboardingJobs.get(id);
@@ -2224,7 +2487,7 @@ const MOCK_SEARCH_USERS = [
   { id: 'ms-15', displayName: 'Olivier Roux',     mail: 'olivier.roux@captivea.com' },
 ];
 
-app.get('/api/users/graph-search', auth, requireRole('admin'), async (req, res) => {
+app.get('/api/users/graph-search', auth, requireRole('admin'), requireModule('onboarding'), async (req, res) => {
   const q = String(req.query.q || '').trim();
   if (q.length < 2) return res.json([]);
 
@@ -2259,6 +2522,68 @@ app.get('/api/users/graph-search', auth, requireRole('admin'), async (req, res) 
   }
 });
 
+// ─── Accès aux boîtes partagées (à la demande, pour un employé existant) ─────
+
+// Boîtes configurées (Administration → Groupes → Boîtes partagées), dédoublonnées par adresse.
+async function configuredMailboxes() {
+  const db = await getDB();
+  const read = key => { try { return JSON.parse(dbRow(db, `SELECT value FROM settings WHERE key=?`, [key])?.value || '[]'); } catch (_) { return []; } };
+  const byEmail = new Map();
+  for (const m of [...read('global_shared_mailboxes').map(x => ({ ...x, location: 'ALL' })), ...read('department_shared_mailboxes')]) {
+    if (!m || typeof m.email !== 'string' || !m.email) continue;
+    const key = m.email.toLowerCase();
+    if (byEmail.has(key)) continue;
+    const scope = m.location === 'ALL'
+      ? 'Tous les employés'
+      : [(m.countries || []).join(', '), (m.departments || []).join(', ')].filter(Boolean).join(' · ');
+    byEmail.set(key, { email: key, name: m.name || m.label || m.email, scope });
+  }
+  return [...byEmail.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+app.get('/api/shared-mailboxes', auth, requireRole('admin'), requireModule('onboarding'), async (req, res) => {
+  res.json(await configuredMailboxes());
+});
+
+app.post('/api/shared-mailboxes/grant', auth, requireRole('admin'), requireModule('onboarding'), async (req, res) => {
+  const { email, mailboxes } = req.body || {};
+  if (!isValidEmail(typeof email === 'string' ? email.trim() : ''))
+    return res.status(400).json({ error: 'Email de la personne invalide' });
+  if (!Array.isArray(mailboxes) || mailboxes.length === 0 || mailboxes.length > 50 || mailboxes.some(m => typeof m !== 'string'))
+    return res.status(400).json({ error: 'Sélectionne au moins une boîte partagée' });
+
+  // Seules les boîtes configurées par un admin peuvent être attribuées (jamais une adresse libre).
+  const allowed = new Map((await configuredMailboxes()).map(m => [m.email, m]));
+  const wanted = [...new Set(mailboxes.map(m => m.trim().toLowerCase()))];
+  const unknown = wanted.filter(m => !allowed.has(m));
+  if (unknown.length) return res.status(400).json({ error: `Boîte(s) non configurée(s) : ${unknown.slice(0, 3).join(', ')}` });
+
+  let displayName = email.trim();
+  let upn = email.trim();
+  if (!MOCK_GRAPH) {
+    try {
+      const { graphFetch } = require('./lib/graph');
+      const u = await graphFetch(`/users/${encodeURIComponent(email.trim())}?$select=id,displayName,userPrincipalName`);
+      displayName = u.displayName || displayName;
+      upn = u.userPrincipalName || upn;
+    } catch (e) {
+      if (e.graphStatus === 404) return res.status(404).json({ error: 'Utilisateur introuvable dans Azure AD' });
+      logAction(`[mailbox-access] ❌ Lookup AD ${email} : ${e.message}`);
+      return res.status(502).json({ error: 'Microsoft Graph indisponible' });
+    }
+  }
+
+  const results = [];
+  for (const mb of wanted) {
+    const meta = allowed.get(mb);
+    if (MOCK_GRAPH) { results.push({ email: mb, name: meta.name, status: 'mock' }); continue; }
+    const r = await grantMailboxAccess(upn, mb, meta.name, `[mailbox-access] ${req.user.email} →`);
+    // Le détail technique reste dans les logs : on ne renvoie pas le message brut d'Exchange.
+    results.push({ email: mb, name: meta.name, status: r.status, ...(r.status === 'error' ? { error: 'Échec Exchange (voir les logs serveur)' } : {}) });
+  }
+  res.json({ ok: results.every(r => r.status !== 'error'), displayName, results });
+});
+
 // ─── Admin: Onboarding schema ─────────────────────────────────────────────────
 
 const SCHEMA_DEFAULTS = {
@@ -2267,7 +2592,7 @@ const SCHEMA_DEFAULTS = {
   step4_sp_groups: { enabled: true },
 };
 
-app.get('/api/admin/schema', auth, requireRole('admin'), async (req, res) => {
+app.get('/api/admin/schema', auth, requireRole('admin'), requireModule('onboarding'), async (req, res) => {
   const db = await getDB();
   const row = dbRow(db, `SELECT value FROM settings WHERE key='onboarding_schema'`);
   try {
@@ -2282,7 +2607,7 @@ app.get('/api/admin/schema', auth, requireRole('admin'), async (req, res) => {
   }
 });
 
-app.put('/api/admin/schema', auth, requireRole('admin'), async (req, res) => {
+app.put('/api/admin/schema', auth, requireRole('admin'), requireModule('onboarding'), async (req, res) => {
   const s = req.body;
   if (typeof s !== 'object' || s === null) return res.status(400).json({ error: 'Payload invalide' });
   const allowed = new Set(['step2_group', 'step3_license', 'step4_sp_groups']);
@@ -2305,6 +2630,9 @@ app.put('/api/admin/schema', auth, requireRole('admin'), async (req, res) => {
 // ─── Error handler ────────────────────────────────────────────────────────────
 
 app.use((err, _req, res, _next) => {
+  // Erreurs du parseur de corps : c'est la faute de l'appelant, pas du serveur (utile à n8n).
+  if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'JSON invalide' });
+  if (err.type === 'entity.too.large') return res.status(413).json({ error: 'Corps de requête trop volumineux' });
   console.error('[EXPRESS ERROR]', err);
   res.status(500).json({ error: 'Erreur serveur' });
 });
@@ -2356,15 +2684,55 @@ async function recoverStaleOnboardings() {
   if (stale.length) saveDB();
   if (stale.length) console.log(`[startup] ${stale.length} onboarding(s) interrompu(s) marqué(s) comme échoués`);
 
+  // Reprise uniquement des onboardings récents (< 24 h) : relancer des semaines plus tard
+  // créerait des comptes ou enverrait des invitations que personne n'attend. Les plus anciens
+  // sont marqués en échec, de façon visible, avec la marche à suivre.
+  const RESUME_MAX_DAYS = 1;
+
   // Onboardings créés juste avant un redémarrage, jamais démarrés (statut 'pending' — la
   // première étape n'a encore rien touché côté Graph) : sans danger de doublon, on relance
   // simplement leur traitement.
-  const orphaned = dbRows(db, `SELECT id FROM onboardings WHERE status='pending'`);
-  orphaned.forEach(({ id }) => {
-    logAction(`[${id}] [startup] Reprise d'un onboarding resté en attente (redémarrage serveur)`);
-    executeOnboarding(id).catch(err => console.error('[executeOnboarding][resume]', err));
-  });
-  if (orphaned.length) console.log(`[startup] ${orphaned.length} onboarding(s) en attente relancé(s)`);
+  // Filtré sur is_mock : un process réel ne doit jamais reprendre des lignes de démo, ni l'inverse.
+  const mock = MOCK_GRAPH ? 1 : 0;
+  const orphaned = dbRows(db, `SELECT id, julianday('now') - julianday(created_at) AS age_days FROM onboardings WHERE status='pending' AND is_mock=?`, [mock]);
+  let resumed = 0;
+  for (const { id, age_days } of orphaned) {
+    if (age_days < RESUME_MAX_DAYS) {
+      logAction(`[${id}] [startup] Reprise d'un onboarding resté en attente (redémarrage serveur)`);
+      executeOnboarding(id).catch(err => console.error('[executeOnboarding][resume]', err));
+      resumed++;
+    } else {
+      db.run(`UPDATE onboardings SET status='failed', error_message=? WHERE id=?`,
+        ["Jamais démarré (redémarrage serveur) — à relancer manuellement si besoin", id]);
+      db.run(`UPDATE onboarding_steps SET status='failed', error_message='Interrompu' WHERE onboarding_id=? AND status='running'`, [id]);
+    }
+  }
+  if (orphaned.length) { saveDB(); console.log(`[startup] ${resumed}/${orphaned.length} onboarding(s) en attente relancé(s)`); }
+
+  // Onboardings en 'partial' : compte et licence sont prêts, mais la phase groupes/GitHub/Teams,
+  // lancée 60 s plus tard par un minuteur en mémoire, n'a pas abouti (redémarrage ou crash du
+  // serveur entre-temps). Le frontend les affichait à tort « En attente ».
+  const partial = dbRows(db, `SELECT id, employee_ad_id, employee_email, julianday('now') - julianday(created_at) AS age_days FROM onboardings WHERE status='partial' AND is_mock=?`, [mock]);
+  if (partial.length) {
+    const schemaRow = dbRow(db, `SELECT value FROM settings WHERE key='onboarding_schema'`);
+    const schema = (() => { try { return schemaRow ? JSON.parse(schemaRow.value) : {}; } catch (_) { return {}; } })();
+    const step4Enabled = schema.step4_sp_groups?.enabled !== false;
+    let resumedBg = 0;
+    for (const p of partial) {
+      if (p.employee_ad_id && p.age_days < RESUME_MAX_DAYS) {
+        logAction(`[${p.id}] [startup] Reprise de la phase groupes/GitHub interrompue (redémarrage serveur)`);
+        executeOnboardingBackground(p.id, p.employee_ad_id, p.employee_email, step4Enabled)
+          .catch(err => markBackgroundFailed(p.id, err));
+        resumedBg++;
+      } else {
+        db.run(`UPDATE onboardings SET status='failed', error_message=? WHERE id=?`,
+          ["Phase groupes/GitHub interrompue (redémarrage serveur) — compte et licence créés ; compléter via « Onboarding manuel »", p.id]);
+        db.run(`UPDATE onboarding_steps SET status='failed', error_message='Interrompu' WHERE onboarding_id=? AND status='running'`, [p.id]);
+      }
+    }
+    saveDB();
+    console.log(`[startup] ${resumedBg}/${partial.length} onboarding(s) partiel(s) repris`);
+  }
 }
 
 // Rappel d'invitation GitHub : renvoie une invitation 7 jours après la création, pour les
@@ -2402,6 +2770,17 @@ getDB().then(async () => {
   await ensureDefaultAdmin();
   sendDueGithubReminders().catch(err => console.error('[github-reminder]', err));
   setInterval(() => sendDueGithubReminders().catch(err => console.error('[github-reminder]', err)), 6 * 60 * 60 * 1000);
+  try {
+    const db = await getDB();
+    const row = dbRows(db, "SELECT value FROM settings WHERE key='monitoring_sharepoint'")[0];
+    if (row) spSync.setOverride(JSON.parse(row.value));
+  } catch (err) { console.error('[monitoring-sync] réglage illisible, valeurs .env utilisées'); }
+  if (!MOCK_GRAPH) {
+    // Se déclenche seulement si l'emplacement est configuré (.env ou Paramètres), sans redémarrage nécessaire.
+    const auto = () => (spSync.isConfigured() ? syncMonitoringFromSharePoint('auto').catch(err => console.error('[monitoring-sync]', err.message)) : null);
+    setTimeout(auto, 30 * 1000);
+    setInterval(auto, 6 * 60 * 60 * 1000);
+  }
   app.listen(PORT, () => {
     console.log(`Onboarding M365 — backend sur http://localhost:${PORT}${MOCK_GRAPH ? ' [MOCK]' : ''}`);
   });

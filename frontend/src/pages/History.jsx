@@ -1,3 +1,7 @@
+// [EN-TÊTE] History.jsx — module Onboarding : liste des onboardings avec recherche et filtre par statut, actualisation silencieuse tant
+// qu'un onboarding est en cours (running/partial), suppression définitive réservée au super administrateur.
+// Statuts : pending (En attente), running (En cours), partial (Finalisation), done (Terminé), failed (Échoué).
+
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api';
@@ -33,6 +37,7 @@ const STATUS_CFG = {
   done:        { label: 'Terminé',       color: '#22c55e', bg: 'rgba(34,197,94,.12)',   border: 'rgba(34,197,94,.25)'   },
   failed:      { label: 'Échoué',        color: '#ef4444', bg: 'rgba(239,68,68,.12)',  border: 'rgba(239,68,68,.25)'   },
   running:     { label: 'En cours',      color: '#60a5fa', bg: 'rgba(96,165,250,.12)', border: 'rgba(96,165,250,.25)'  },
+  partial:     { label: 'Finalisation',  color: '#22d3ee', bg: 'rgba(34,211,238,.1)',  border: 'rgba(34,211,238,.25)'  },
   pending:     { label: 'En attente',    color: '#94a3b8', bg: 'rgba(148,163,184,.1)', border: 'rgba(148,163,184,.2)'  },
   rolled_back: { label: 'Rollback',      color: '#f59e0b', bg: 'rgba(245,158,11,.12)', border: 'rgba(245,158,11,.25)'  },
 };
@@ -120,8 +125,9 @@ export default function History() {
     }
   }
 
-  function load() {
-    setLoading(true);
+  // `silent` : rafraîchissement automatique (polling) sans remplacer le tableau par un spinner.
+  function load(silent = false) {
+    if (!silent) setLoading(true);
     const qs = filter ? `?status=${filter}` : '';
     api.get(`/api/onboardings${qs}`)
       .then(data => { setOnboardings(data); setLoading(false); })
@@ -131,9 +137,9 @@ export default function History() {
   useEffect(() => { load(); }, [filter]);
 
   useEffect(() => {
-    const hasRunning = onboardings.some(o => o.status === 'running' || o.status === 'pending');
+    const hasRunning = onboardings.some(o => o.status === 'running' || o.status === 'pending' || o.status === 'partial');
     if (!hasRunning) return;
-    const id = setInterval(load, 3000);
+    const id = setInterval(() => load(true), 3000);
     return () => clearInterval(id);
   }, [onboardings]);
 
@@ -179,7 +185,7 @@ export default function History() {
             </h1>
             <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>
               {onboardings.length} au total
-              {counts.running > 0 && <> · <span style={{ color: '#60a5fa', fontWeight: 600 }}>{counts.running} en cours</span></>}
+              {counts.running + counts.partial > 0 && <> · <span style={{ color: '#60a5fa', fontWeight: 600 }}>{counts.running + counts.partial} en cours</span></>}
               {counts.failed  > 0 && <> · <span style={{ color: '#ef4444', fontWeight: 600 }}>{counts.failed} échoués</span></>}
             </p>
           </div>
@@ -260,7 +266,7 @@ export default function History() {
           })}
         </div>
 
-        <Btn onClick={load} disabled={loading} style={{ marginLeft: 'auto' }}>
+        <Btn onClick={() => load()} disabled={loading} style={{ marginLeft: 'auto' }}>
           <Icon path={IC.refresh} size={13} />
           Actualiser
         </Btn>
@@ -436,7 +442,7 @@ export default function History() {
             </p>
 
             {deleteError && (
-              <div className="error-box" style={{ marginBottom: 14, fontSize: 12 }}>{deleteError}</div>
+              <div className="error-box" role="alert" style={{ marginBottom: 14, fontSize: 12 }}>{deleteError}</div>
             )}
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>

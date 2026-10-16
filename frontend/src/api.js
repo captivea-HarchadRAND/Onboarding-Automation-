@@ -1,3 +1,6 @@
+// [EN-TÊTE] api.js — petit client HTTP : api.get/post/put/delete(chemin, corps). Cookies de session inclus ; une réponse 401 hors
+// /auth/ renvoie vers /login ; une réponse en erreur lève une Error dont le message est le champ « error » du serveur.
+
 async function request(method, path, body) {
   const opts = {
     method,

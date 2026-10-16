@@ -1,3 +1,7 @@
+// [EN-TÊTE] UserContext.jsx — session côté interface : user (id, nom, email, rôle, modules), mockMode (Graph simulé),
+// isSuperAdmin. undefined = chargement en cours, null = non connecté. setUser() rafraîchit aussi isSuperAdmin depuis /api/auth/me.
+// user.modules = modules accessibles (le serveur applique la même règle ; l'interface ne fait que masquer).
+
 import { createContext, useContext, useEffect, useState } from 'react';
 import { api } from '../api';
 

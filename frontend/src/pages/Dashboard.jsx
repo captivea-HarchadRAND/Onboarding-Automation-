@@ -1,3 +1,7 @@
+// [EN-TÊTE] Dashboard.jsx — module Onboarding : chiffres (/api/stats : total, ce mois, réussis, échoués, en cours, taux), derniers
+// onboardings (un opérateur ne voit que les siens) et licences disponibles (/api/graph/licenses). Actualisation automatique tant
+// qu'un onboarding est en cours (statuts running ET partial = « Finalisation »).
+
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api';
@@ -34,6 +38,7 @@ const STATUS = {
   done:    { label: 'Terminé',    bg: 'rgba(34,197,94,.12)',  color: '#22c55e' },
   failed:  { label: 'Échoué',     bg: 'rgba(239,68,68,.12)',  color: '#ef4444' },
   running: { label: 'En cours',   bg: 'rgba(6,182,212,.12)',  color: '#06b6d4' },
+  partial: { label: 'Finalisation', bg: 'rgba(34,211,238,.1)', color: '#22d3ee' },
   pending: { label: 'En attente', bg: 'rgba(148,163,184,.1)', color: '#94a3b8' },
 };
 

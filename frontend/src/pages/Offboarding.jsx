@@ -1,3 +1,8 @@
+// [EN-TÊTE] Offboarding.jsx — module Onboarding, administrateurs : départ d'un employé (/offboarding). POST /api/offboarding puis
+// sondage de GET /api/offboarding/:id. 8 étapes côté serveur (blocage du compte … révocation de la licence EN DERNIER).
+// État du travail gardé en MÉMOIRE du serveur. Le flux « script .bat + confirmation » (status manual / waitingForConfirmation)
+// n'est plus déclenché par le serveur : code probablement mort, à confirmer avant suppression.
+
 import { useState, useEffect, useRef } from 'react';
 import { api } from '../api';
 

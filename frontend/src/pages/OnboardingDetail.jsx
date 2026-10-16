@@ -1,3 +1,7 @@
+// [EN-TÊTE] OnboardingDetail.jsx — module Onboarding : détail d'un onboarding (/history/:id) : étapes une par une, erreurs, identifiants.
+// Le mot de passe temporaire n'est renvoyé qu'UNE fois par GET /api/onboardings/:id (puis effacé côté serveur). Actualisation
+// automatique tant que l'onboarding n'est pas terminé ou échoué.
+
 import { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { api } from '../api';
@@ -40,6 +44,7 @@ const STATUS = {
   done:        { label: 'Terminé',    color: '#22c55e', bg: 'rgba(34,197,94,.1)',  border: 'rgba(34,197,94,.25)',  icon: ICONS.check  },
   failed:      { label: 'Échoué',     color: '#ef4444', bg: 'rgba(239,68,68,.1)', border: 'rgba(239,68,68,.25)',  icon: ICONS.x      },
   running:     { label: 'En cours',   color: '#818cf8', bg: 'rgba(129,140,248,.1)',border: 'rgba(129,140,248,.25)',icon: ICONS.refresh },
+  partial:     { label: 'Finalisation', color: '#22d3ee', bg: 'rgba(34,211,238,.1)', border: 'rgba(34,211,238,.25)', icon: ICONS.refresh },
   pending:     { label: 'En attente', color: '#94a3b8', bg: 'rgba(148,163,184,.08)',border:'rgba(148,163,184,.18)',icon: ICONS.clock  },
   skipped:     { label: 'Ignoré',     color: '#64748b', bg: 'rgba(100,116,139,.08)',border:'rgba(100,116,139,.18)',icon: ICONS.skip   },
   rolled_back: { label: 'Rollback',   color: '#f59e0b', bg: 'rgba(245,158,11,.1)', border: 'rgba(245,158,11,.25)', icon: ICONS.undo  },
@@ -198,7 +203,7 @@ export default function OnboardingDetail() {
 
   useEffect(() => {
     if (!data) return;
-    if (data.status !== 'running' && data.status !== 'pending') return;
+    if (data.status !== 'running' && data.status !== 'pending' && data.status !== 'partial') return;
     const interval = setInterval(load, 1500);
     return () => clearInterval(interval);
   }, [data?.status]);
@@ -229,7 +234,7 @@ export default function OnboardingDetail() {
     </div>
   );
 
-  const isLive    = data.status === 'running' || data.status === 'pending';
+  const isLive    = data.status === 'running' || data.status === 'pending' || data.status === 'partial';
   const isDone    = data.status === 'done';
   const isFailed  = data.status === 'failed';
   const steps     = data.steps || [];

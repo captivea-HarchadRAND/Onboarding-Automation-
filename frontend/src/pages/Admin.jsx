@@ -1,222 +1,14 @@
+// [EN-TÊTE] Admin.jsx — module Onboarding : Administration (/admin), administrateurs. Onglets (composants Tab… plus bas) :
+//   Onboarding (mot de passe temporaire/définitif, domaines email) · API (Client ID, état du secret, domaine par défaut) ·
+//   Groupes (TabOrg : Globaux, Boîtes partagées, Par pays/villes/canaux Teams, Communication) · Pointage (affectations de groupes
+//   par poste et localisation, filiales) · Schémas (activer/désactiver les étapes, délais de nouvel essai licence).
+//   Données : GET/PUT /api/admin/settings et /api/admin/schema ; stockées en base (table settings), prioritaires sur le .env.
+//   La gestion des utilisateurs n'est plus ici : voir PortalAdmin / UsersManager (super admin).
+
 import { useEffect, useRef, useState } from 'react';
+import Select from '../components/Select';
 import { api } from '../api';
-import { useUser } from '../context/UserContext';
 import { JOB_ROLES } from '../jobRoles';
-
-// ─── Modal ────────────────────────────────────────────────────────────────────
-
-function Modal({ title, onClose, children }) {
-  return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
-      <div className="card" style={{ width: '100%', maxWidth: 440 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-          <h2 style={{ fontSize: 16, fontWeight: 600 }}>{title}</h2>
-          <button className="btn btn-ghost" style={{ padding: '4px 8px' }} onClick={onClose}>✕</button>
-        </div>
-        {children}
-      </div>
-    </div>
-  );
-}
-
-// ─── Tab: Utilisateurs ────────────────────────────────────────────────────────
-
-function TabUsers({ me }) {
-  const [users, setUsers]       = useState([]);
-  const [loading, setLoading]   = useState(true);
-  const [modal, setModal]       = useState(null);
-  const [form, setForm]         = useState({ name: '', email: '', role: 'operator', password: '' });
-  const [pwdForm, setPwdForm]   = useState({ password: '' });
-  const [error, setError]       = useState('');
-  const [saving, setSaving]     = useState(false);
-  const [inviteLink, setInviteLink] = useState('');
-
-  function load() {
-    api.get('/api/admin/users').then(data => { setUsers(data); setLoading(false); }).catch(() => setLoading(false));
-  }
-  useEffect(() => { load(); }, []);
-
-  function openCreate() { setForm({ name: '', email: '', role: 'operator', password: '' }); setInviteLink(''); setError(''); setModal('create'); }
-  function openEdit(u)  { setForm({ name: u.name, email: u.email, role: u.role, status: u.status }); setError(''); setModal({ type: 'edit', user: u }); }
-  function openPwd(u)   { setPwdForm({ password: '' }); setError(''); setModal({ type: 'pwd', user: u }); }
-
-  async function handleCreate(e) {
-    e.preventDefault(); setError(''); setSaving(true);
-    try {
-      const data = await api.post('/api/admin/users', { name: form.name, email: form.email, role: form.role, password: form.password || undefined });
-      if (data.invite_token) { setInviteLink(`${window.location.origin}/invite/${data.invite_token}`); }
-      else setModal(null);
-      load();
-    } catch (err) { setError(err.message); }
-    finally { setSaving(false); }
-  }
-
-  async function handleEdit(e) {
-    e.preventDefault(); setError(''); setSaving(true);
-    try { await api.put(`/api/admin/users/${modal.user.id}`, { name: form.name, email: form.email, role: form.role, status: form.status }); setModal(null); load(); }
-    catch (err) { setError(err.message); }
-    finally { setSaving(false); }
-  }
-
-  async function handlePwd(e) {
-    e.preventDefault(); setError(''); setSaving(true);
-    try { await api.put(`/api/admin/users/${modal.user.id}/reset-password`, { password: pwdForm.password }); setModal(null); }
-    catch (err) { setError(err.message); }
-    finally { setSaving(false); }
-  }
-
-  async function toggleStatus(u) {
-    const status = u.status === 'disabled' ? 'active' : 'disabled';
-    try { await api.put(`/api/admin/users/${u.id}`, { status }); load(); }
-    catch (err) { alert(err.message); }
-  }
-
-  async function handleDelete(u) {
-    if (!confirm(`Supprimer définitivement ${u.name} ?`)) return;
-    try { await api.delete(`/api/admin/users/${u.id}`); load(); }
-    catch (err) { alert(err.message); }
-  }
-
-  return (
-    <>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
-        <button className="btn btn-primary" onClick={openCreate}>+ Ajouter un utilisateur</button>
-      </div>
-
-      <div className="card" style={{ padding: 0 }}>
-        <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>
-          Utilisateurs de la plateforme
-        </div>
-        {loading ? (
-          <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}><span className="spinner" /></div>
-        ) : (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr><th>Nom</th><th>Email</th><th>Rôle</th><th>Statut</th><th>Créé le</th><th></th></tr>
-              </thead>
-              <tbody>
-                {users.map(u => (
-                  <tr key={u.id}>
-                    <td style={{ fontWeight: 500, color: 'var(--text)' }}>
-                      {u.name}
-                      {u.id === me?.id && <span style={{ fontSize: 11, color: 'var(--primary)', marginLeft: 6 }}>(moi)</span>}
-                    </td>
-                    <td style={{ fontSize: 13, color: 'var(--muted)' }}>{u.email}</td>
-                    <td>
-                      <span style={{ fontSize: 12, fontWeight: 600, color: u.role === 'admin' ? 'var(--warning)' : 'var(--muted)', textTransform: 'capitalize' }}>
-                        {u.role}
-                      </span>
-                    </td>
-                    <td>
-                      <span className={`badge ${u.status === 'active' ? 'badge-done' : u.status === 'pending' ? 'badge-pending' : 'badge-failed'}`}>
-                        {u.status === 'active' ? 'Actif' : u.status === 'pending' ? 'En attente' : 'Désactivé'}
-                      </span>
-                    </td>
-                    <td style={{ color: 'var(--muted)', fontSize: 12 }}>{new Date(u.created_at).toLocaleDateString('fr-FR')}</td>
-                    <td>
-                      <div style={{ display: 'flex', gap: 6 }}>
-                        <button className="btn btn-ghost" style={{ padding: '3px 8px', fontSize: 12 }} onClick={() => openEdit(u)}>Modifier</button>
-                        <button className="btn btn-ghost" style={{ padding: '3px 8px', fontSize: 12 }} onClick={() => openPwd(u)}>Mot de passe</button>
-                        {u.id !== me?.id && (
-                          <button className={`btn ${u.status === 'disabled' ? 'btn-ghost' : 'btn-danger'}`} style={{ padding: '3px 8px', fontSize: 12 }} onClick={() => toggleStatus(u)}>
-                            {u.status === 'disabled' ? 'Réactiver' : 'Désactiver'}
-                          </button>
-                        )}
-                        {u.status === 'disabled' && u.id !== me?.id && (
-                          <button className="btn btn-danger" style={{ padding: '3px 8px', fontSize: 12 }} onClick={() => handleDelete(u)}>Supprimer</button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {/* Modal: Create */}
-      {modal === 'create' && (
-        <Modal title="Ajouter un utilisateur" onClose={() => setModal(null)}>
-          {inviteLink ? (
-            <div>
-              <div style={{ marginBottom: 12, fontSize: 13, color: 'var(--success)' }}>Utilisateur créé. Partagez ce lien d'invitation :</div>
-              <div style={{ background: 'var(--surface2)', borderRadius: 6, padding: '10px 12px', fontSize: 12, color: 'var(--info)', wordBreak: 'break-all', marginBottom: 16 }}>{inviteLink}</div>
-              <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center' }} onClick={() => navigator.clipboard?.writeText(inviteLink)}>Copier le lien</button>
-              <button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'center', marginTop: 8 }} onClick={() => setModal(null)}>Fermer</button>
-            </div>
-          ) : (
-            <form onSubmit={handleCreate}>
-              {error && <div className="error-box">{error}</div>}
-              <div className="form-group"><label>Nom *</label><input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} required /></div>
-              <div className="form-group"><label>Email *</label><input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} required /></div>
-              <div className="form-group">
-                <label>Rôle</label>
-                <select value={form.role} onChange={e => setForm(f => ({ ...f, role: e.target.value }))}>
-                  <option value="operator">Opérateur</option>
-                  <option value="admin">Administrateur</option>
-                </select>
-              </div>
-              <div className="form-group">
-                <label>Mot de passe <span style={{ fontWeight: 400, color: 'var(--muted)' }}>(vide = lien d'invitation)</span></label>
-                <input type="password" value={form.password} onChange={e => setForm(f => ({ ...f, password: e.target.value }))} placeholder="Laisser vide pour envoyer une invitation" />
-              </div>
-              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                <button type="button" className="btn btn-ghost" onClick={() => setModal(null)}>Annuler</button>
-                <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'Création...' : 'Créer'}</button>
-              </div>
-            </form>
-          )}
-        </Modal>
-      )}
-
-      {/* Modal: Edit */}
-      {modal?.type === 'edit' && (
-        <Modal title="Modifier l'utilisateur" onClose={() => setModal(null)}>
-          <form onSubmit={handleEdit}>
-            {error && <div className="error-box">{error}</div>}
-            <div className="form-group"><label>Nom</label><input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} /></div>
-            <div className="form-group"><label>Email</label><input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} /></div>
-            <div className="form-group">
-              <label>Rôle</label>
-              <select value={form.role} onChange={e => setForm(f => ({ ...f, role: e.target.value }))}>
-                <option value="operator">Opérateur</option>
-                <option value="admin">Administrateur</option>
-              </select>
-            </div>
-            <div className="form-group">
-              <label>Statut</label>
-              <select value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value }))}>
-                <option value="active">Actif</option>
-                <option value="pending">En attente</option>
-                <option value="disabled">Désactivé</option>
-              </select>
-            </div>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button type="button" className="btn btn-ghost" onClick={() => setModal(null)}>Annuler</button>
-              <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'Enregistrement...' : 'Enregistrer'}</button>
-            </div>
-          </form>
-        </Modal>
-      )}
-
-      {/* Modal: Password */}
-      {modal?.type === 'pwd' && (
-        <Modal title={`Réinitialiser — ${modal.user.name}`} onClose={() => setModal(null)}>
-          <form onSubmit={handlePwd}>
-            {error && <div className="error-box">{error}</div>}
-            <div className="form-group"><label>Nouveau mot de passe</label><input type="password" value={pwdForm.password} onChange={e => setPwdForm({ password: e.target.value })} placeholder="12 caractères min." required /></div>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button type="button" className="btn btn-ghost" onClick={() => setModal(null)}>Annuler</button>
-              <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'Enregistrement...' : 'Réinitialiser'}</button>
-            </div>
-          </form>
-        </Modal>
-      )}
-    </>
-  );
-}
 
 // ─── Tab: API ─────────────────────────────────────────────────────────────────
 
@@ -258,7 +50,7 @@ function TabAPI() {
 
   return (
     <form onSubmit={handleSave}>
-      {error  && <div className="error-box">{error}</div>}
+      {error  && <div className="error-box" role="alert">{error}</div>}
       {saved  && <div style={{ background: 'rgba(34,197,94,.12)', border: '1px solid rgba(34,197,94,.3)', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 13, color: 'var(--success)' }}>Paramètres enregistrés.</div>}
 
       {/* Azure AD */}
@@ -390,28 +182,34 @@ function DeptPillsEditor({ depts, onChange, allowedRoles }) {
   );
 }
 
-function CommGroupRows({ groups, setGroups, locations, allowedRoles }) {
-  function add()           { setGroups(g => [...g, { name: '', location: 'ALL', countries: [], departments: [], id: '' }]); }
+// `mailbox` : mêmes lignes (nom, global/défaut, pays, rôles) mais l'identifiant est l'adresse
+// d'une boîte partagée Exchange au lieu d'un Group Object ID.
+function CommGroupRows({ groups, setGroups, locations, allowedRoles, mailbox = false }) {
+  function add()           { setGroups(g => [...g, mailbox ? { name: '', location: 'ALL', countries: [], departments: [], email: '' } : { name: '', location: 'ALL', countries: [], departments: [], id: '' }]); }
   function remove(i)       { setGroups(g => g.filter((_, idx) => idx !== i)); }
   function update(i, k, v) { setGroups(g => g.map((item, idx) => idx === i ? { ...item, [k]: v } : item)); }
 
   return (
     <div>
       {groups.length === 0 && (
-        <div style={{ fontSize: 12, color: 'var(--muted)', fontStyle: 'italic', padding: '8px 0' }}>Aucun groupe configuré.</div>
+        <div style={{ fontSize: 12, color: 'var(--muted)', fontStyle: 'italic', padding: '8px 0' }}>{mailbox ? 'Aucune boîte partagée configurée.' : 'Aucun groupe configuré.'}</div>
       )}
       {groups.map((g, i) => {
         const isGbl = g.location === 'ALL';
         const countries = g.countries || [];
         const available = locations.filter(l => !countries.includes(l.code));
-        const paysInvalid = !isGbl && (g.departments || []).length > 0 && countries.length === 0;
+        // Boîte partagée non globale : un pays est toujours requis. Groupe de communication : seulement si des rôles sont choisis.
+        const paysInvalid = !isGbl && countries.length === 0 && (mailbox || (g.departments || []).length > 0);
         return (
           <div key={i} style={{ marginBottom: 10, padding: '12px 14px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--surface2)' }}>
             {/* Ligne 1 : Nom + toggle + supprimer */}
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 }}>
               <input placeholder="Nom *" value={g.name || ''} onChange={e => update(i, 'name', e.target.value)}
                 style={{ flex: 1, ...(!(g.name || '').trim() ? { borderColor: 'rgba(239,68,68,.6)' } : {}) }} />
-              <div onClick={() => update(i, 'location', isGbl ? 'DEFAULT' : 'ALL')}
+              <div onClick={() => (mailbox && !isGbl
+                  // Global = tout le monde sans exception : on retire pays et rôles pour éviter des valeurs cachées.
+                  ? setGroups(list => list.map((item, idx) => idx === i ? { ...item, location: 'ALL', countries: [], departments: [] } : item))
+                  : update(i, 'location', isGbl ? 'DEFAULT' : 'ALL'))}
                 style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer', userSelect: 'none',
                          padding: '6px 11px', borderRadius: 7, border: `1px solid ${isGbl ? 'rgba(5,150,105,.35)' : 'var(--border)'}`,
                          background: isGbl ? 'rgba(5,150,105,.07)' : 'transparent', flexShrink: 0, transition: 'all .15s' }}>
@@ -424,7 +222,7 @@ function CommGroupRows({ groups, setGroups, locations, allowedRoles }) {
                 style={{ background: 'transparent', border: '1px solid var(--border)', borderRadius: 6, width: 30, height: 34, cursor: 'pointer', color: 'var(--muted)', fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>✕</button>
             </div>
             {/* Ligne 2 : Pays + Rôles + ID */}
-            <div style={{ display: 'grid', gridTemplateColumns: !isGbl ? '1fr 1.5fr 1.5fr' : '1fr 1.5fr', gap: 8, alignItems: 'start' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: mailbox ? (isGbl ? '1fr' : '1fr 1.5fr 1.5fr') : (!isGbl ? '1fr 1.5fr 1.5fr' : '1fr 1.5fr'), gap: 8, alignItems: 'start' }}>
               {!isGbl && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', minHeight: 34, padding: '3px 7px', borderRadius: 6, border: paysInvalid ? '1px solid rgba(239,68,68,.5)' : '1px solid var(--border)', background: 'var(--surface)' }}>
                   {countries.map(code => {
@@ -437,29 +235,44 @@ function CommGroupRows({ groups, setGroups, locations, allowedRoles }) {
                     );
                   })}
                   {available.length > 0 && (
-                    <select defaultValue="" onChange={e => { if (e.target.value) { update(i, 'countries', [...countries, e.target.value]); e.target.value = ''; }}}
+                    <Select defaultValue="" onChange={e => { if (e.target.value) { update(i, 'countries', [...countries, e.target.value]); e.target.value = ''; }}}
                       style={{ fontSize: 11, padding: '2px 4px', borderRadius: 6, border: '1px dashed var(--border)', background: 'transparent', color: 'var(--muted)', cursor: 'pointer' }}>
                       <option value="">+ Pays</option>
                       {available.map(l => <option key={l.code} value={l.code}>{l.flag} {l.code}</option>)}
-                    </select>
+                    </Select>
                   )}
                 </div>
               )}
-              <DeptPillsEditor depts={g.departments || []} onChange={depts => update(i, 'departments', depts)} allowedRoles={allowedRoles} />
-              <input type="text" autoComplete="off" placeholder="Group Object ID" value={g.id}
-                onChange={e => update(i, 'id', e.target.value)}
-                style={{ fontFamily: 'monospace', fontSize: 12, WebkitTextSecurity: g.id ? 'disc' : 'none', ...(g.id.trim() === '' ? { borderColor: 'rgba(239,68,68,.6)' } : {}) }} />
+              {mailbox ? (
+                // Boîte partagée : le département se précise APRÈS le pays, parmi tous les postes (pas la liste Pointage).
+                !isGbl && (countries.length === 0
+                  ? <div style={{ fontSize: 11, color: 'var(--muted)', fontStyle: 'italic', padding: '8px 2px' }}>Choisis d'abord un pays, puis le département (optionnel : sans département, toute personne du pays).</div>
+                  : <DeptPillsEditor depts={g.departments || []} onChange={depts => update(i, 'departments', depts)} />)
+              ) : (
+                <DeptPillsEditor depts={g.departments || []} onChange={depts => update(i, 'departments', depts)} allowedRoles={allowedRoles} />
+              )}
+              {mailbox ? (
+                <input type="email" autoComplete="off" placeholder="Adresse de la boîte partagée *" value={g.email || ''}
+                  onChange={e => update(i, 'email', e.target.value)}
+                  style={{ fontFamily: 'monospace', fontSize: 12, ...((g.email || '').trim() === '' ? { borderColor: 'rgba(239,68,68,.6)' } : {}) }} />
+              ) : (
+                <input type="text" autoComplete="off" placeholder="Group Object ID" value={g.id}
+                  onChange={e => update(i, 'id', e.target.value)}
+                  style={{ fontFamily: 'monospace', fontSize: 12, WebkitTextSecurity: g.id ? 'disc' : 'none', ...(g.id.trim() === '' ? { borderColor: 'rgba(239,68,68,.6)' } : {}) }} />
+              )}
             </div>
-            <input type="email" autoComplete="off"
-              placeholder="Email Exchange (optionnel — si distribution list ou shared mailbox, ex: sales@captivea.com)"
-              value={g.exchangeEmail || ''}
-              onChange={e => update(i, 'exchangeEmail', e.target.value)}
-              style={{ fontFamily: 'monospace', fontSize: 11, marginTop: 6, width: '100%', color: 'var(--muted)' }} />
+            {!mailbox && (
+              <input type="email" autoComplete="off"
+                placeholder="Email Exchange de la liste de distribution (optionnel, ex: sales@captivea.com)"
+                value={g.exchangeEmail || ''}
+                onChange={e => update(i, 'exchangeEmail', e.target.value)}
+                style={{ fontFamily: 'monospace', fontSize: 11, marginTop: 6, width: '100%', color: 'var(--muted)' }} />
+            )}
           </div>
         );
       })}
       <button type="button" onClick={add} style={{ marginTop: 4, padding: '6px 14px', borderRadius: 6, border: '1px dashed var(--border)', background: 'transparent', color: 'var(--muted)', cursor: 'pointer', fontSize: 12 }}>
-        + Ajouter un groupe
+        {mailbox ? '+ Ajouter une boîte partagée' : '+ Ajouter un groupe'}
       </button>
     </div>
   );
@@ -503,7 +316,7 @@ function GroupRows({ groups, setGroups, showLocation = false, showCities = false
             style={g.label.trim() === '' ? { borderColor: 'rgba(239,68,68,.6)', outline: 'none' } : {}}
           />
           {showLocation && (
-            <select
+            <Select
               value={g.location || ''}
               onChange={e => update(i, 'location', e.target.value)}
               title="Code pays"
@@ -515,7 +328,7 @@ function GroupRows({ groups, setGroups, showLocation = false, showCities = false
             >
               <option value="">Pays</option>
               {locations.map(l => <option key={l.code} value={l.code}>{l.flag} {l.code}</option>)}
-            </select>
+            </Select>
           )}
           <input
             type="text"
@@ -762,70 +575,9 @@ function DomainRows({ domains, setDomains }) {
   );
 }
 
-function MailboxRows({ mailboxes, setMailboxes }) {
-  const [confirmIdx, setConfirmIdx] = useState(null);
-
-  function add() {
-    if (mailboxes.some(m => m.email.trim() === '')) return;
-    setMailboxes(list => [...list, { email: '', label: '' }]);
-  }
-  function remove(i) { setMailboxes(list => list.filter((_, idx) => idx !== i)); setConfirmIdx(null); }
-  function update(i, field, val) { setMailboxes(list => list.map((item, idx) => idx === i ? { ...item, [field]: val } : item)); }
-
-  return (
-    <div>
-      <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 14, lineHeight: 1.5 }}>
-        Chaque nouvel employé reçoit l'accès à ces boîtes partagées. C'est une permission Exchange posée sur la boîte elle-même, pas un groupe.
-      </div>
-      {mailboxes.length === 0 && (
-        <div style={{ fontSize: 12, color: 'var(--muted)', padding: '10px 0', fontStyle: 'italic' }}>
-          Aucune boîte partagée configurée.
-        </div>
-      )}
-      {mailboxes.map((m, i) => (
-        <div key={i} style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr auto', gap: 8, marginBottom: 8, alignItems: 'center' }}>
-          <input
-            placeholder="support@captivea.com"
-            value={m.email}
-            onChange={e => update(i, 'email', e.target.value)}
-            style={{
-              fontFamily: 'monospace', fontSize: 13,
-              ...(m.email.trim() === '' ? { borderColor: 'rgba(239,68,68,.6)' } : {}),
-            }}
-          />
-          <input
-            placeholder="Nom (optionnel)"
-            value={m.label || ''}
-            onChange={e => update(i, 'label', e.target.value)}
-          />
-          {confirmIdx === i ? (
-            <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-              <button type="button" onClick={() => remove(i)} style={{ background: 'rgba(239,68,68,.12)', border: '1px solid rgba(239,68,68,.4)', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', color: '#ef4444', fontSize: 11, fontWeight: 600 }}>Oui</button>
-              <button type="button" onClick={() => setConfirmIdx(null)} style={{ background: 'transparent', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', color: 'var(--muted)', fontSize: 11 }}>Non</button>
-            </div>
-          ) : (
-            <button type="button" onClick={() => setConfirmIdx(i)} style={{ background: 'transparent', border: '1px solid var(--border)', borderRadius: 6, width: 30, height: 34, cursor: 'pointer', color: 'var(--muted)', fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center' }} title="Supprimer">✕</button>
-          )}
-        </div>
-      ))}
-      {(() => {
-        const blocked = mailboxes.some(m => m.email.trim() === '');
-        return (
-          <button type="button" onClick={add} disabled={blocked}
-            style={{ marginTop: 4, background: 'transparent', border: `1px dashed ${blocked ? 'rgba(239,68,68,.4)' : 'var(--border)'}`, borderRadius: 6, padding: '6px 14px', cursor: blocked ? 'not-allowed' : 'pointer', color: blocked ? 'rgba(239,68,68,.6)' : 'var(--muted)', fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, opacity: blocked ? 0.7 : 1 }}
-          >
-            <span style={{ fontSize: 16, lineHeight: 1 }}>+</span>
-            {blocked ? "Renseignez l'adresse en attente" : 'Ajouter une boîte partagée'}
-          </button>
-        );
-      })()}
-    </div>
-  );
-}
-
 function TabOrg({ locations, onLocationsChange }) {
   const [globalGroups,        setGlobalGroups]        = useState(null);
-  const [sharedMailboxes,     setSharedMailboxes]     = useState([]);
+  const [mailboxes,           setMailboxes]           = useState([]);
   const [countryGroups,       setCountryGroups]       = useState(null);
   const [communicationGroups, setCommunicationGroups] = useState(null);
   const [pointageRoles,       setPointageRoles]       = useState([]);
@@ -837,7 +589,14 @@ function TabOrg({ locations, onLocationsChange }) {
   useEffect(() => {
     api.get('/api/admin/settings').then(data => {
       setGlobalGroups(data.sharepoint_global_groups   || []);
-      setSharedMailboxes(data.global_shared_mailboxes || []);
+      // Une seule liste : les anciennes « boîtes globales » deviennent des entrées Global sans rôle.
+      setMailboxes([
+        ...(data.global_shared_mailboxes || []).map(m => ({ name: m.label || m.email || '', location: 'ALL', countries: [], departments: [], email: m.email || '' })),
+        ...(data.department_shared_mailboxes || []).map(m => ({
+          name: m.name || m.label || '', location: m.location === 'ALL' ? 'ALL' : 'DEFAULT',
+          countries: m.countries || [], departments: m.departments || [], email: m.email || '',
+        })),
+      ]);
       setCountryGroups(data.sharepoint_country_groups || []);
       setPointageRoles(data.pointage_departments       || []);
       setPointageCommAssign(data.pointage_comm_assignments || []);
@@ -863,7 +622,8 @@ function TabOrg({ locations, onLocationsChange }) {
     ].some(g => !g.id?.trim());
     if (hasMissingId) { setError('Chaque groupe doit avoir un Group Object ID.'); setSaving(false); return; }
     const emailRe = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
-    if (sharedMailboxes.some(m => !emailRe.test(m.email.trim()))) { setError('Chaque boîte partagée doit avoir une adresse email valide.'); setSaving(false); return; }
+    if (mailboxes.some(m => !emailRe.test((m.email || '').trim()) || !(m.name || '').trim())) { setError('Chaque boîte partagée doit avoir un nom et une adresse email valide.'); setSaving(false); return; }
+    if (mailboxes.some(m => m.location !== 'ALL' && (m.countries || []).length === 0)) { setError('Une boîte non globale doit avoir au moins un pays.'); setSaving(false); return; }
     const hasNoPays = communicationGroups.filter(g => g.id).some(g => g.location !== 'ALL' && (g.departments || []).length > 0 && (g.countries || []).length === 0);
     if (hasNoPays) { setError('Un groupe Default avec des rôles doit avoir au moins un pays.'); setSaving(false); return; }
     // Villes : si renseignée, une ville doit avoir un nom ET un Group Object ID
@@ -907,7 +667,8 @@ function TabOrg({ locations, onLocationsChange }) {
 
       await api.put('/api/admin/settings', {
         sharepoint_global_groups:  globalGroups,
-        global_shared_mailboxes:   sharedMailboxes.map(m => ({ email: m.email.trim().toLowerCase(), ...(m.label?.trim() ? { label: m.label.trim() } : {}) })),
+        global_shared_mailboxes:   [],   // fusionnées dans la liste unique ci-dessous
+        department_shared_mailboxes: mailboxes.map(m => ({ name: m.name.trim(), location: m.location, countries: m.countries || [], departments: m.departments || [], email: m.email.trim().toLowerCase() })),
         sharepoint_country_groups: cleanCountryGroups,
         department_assignments:    deptAssignments,
         pointage_comm_assignments: updatedPointageComm,
@@ -923,9 +684,9 @@ function TabOrg({ locations, onLocationsChange }) {
 
   const NAV = [
     { key: 'global',  iconPath: ['M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z', 'M2 12h20', 'M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z'], label: 'Globaux',      sub: 'Tous les employés',     count: globalGroups?.length },
-    { key: 'mailbox', iconPath: ['M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z', 'M22 6l-10 7L2 6'], label: 'Boîtes partagées', sub: 'Tous les employés', title: 'Boîtes partagées globales', count: sharedMailboxes.length },
+    { key: 'mailbox', iconPath: ['M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z', 'M22 6l-10 7L2 6'], label: 'Boîtes partagées', sub: 'Globale ou par département', title: 'Boîtes partagées', count: mailboxes.length },
     { key: 'country', iconPath: ['M1 6v16l7-4 8 4 7-4V2l-7 4-8-4-7 4z', 'M8 2v16', 'M16 6v16'],                                                                                         label: 'Par pays',     sub: 'Selon la localisation', count: countryGroups?.length },
-    { key: 'comm',    iconPath: ['M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13.2 19.79 19.79 0 0 1 1.61 4.6 2 2 0 0 1 3.6 2.4h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.18 6.18l1.87-1.87a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z'], label: 'Communication', sub: 'Par département',       count: communicationGroups?.length },
+    { key: 'comm',    iconPath: ['M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13.2 19.79 19.79 0 0 1 1.61 4.6 2 2 0 0 1 3.6 2.4h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.18 6.18l1.87-1.87a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z'], label: 'Communication', sub: 'Listes de distribution',  title: 'Communication — groupes de distribution', count: communicationGroups?.length },
   ];
 
   if (globalGroups === null) return <div style={{ display: 'flex', justifyContent: 'center', padding: 60 }}><span className="spinner" /></div>;
@@ -934,7 +695,7 @@ function TabOrg({ locations, onLocationsChange }) {
 
   return (
     <form onSubmit={handleSave}>
-      {error && <div className="error-box">{error}</div>}
+      {error && <div className="error-box" role="alert">{error}</div>}
       {saved && <div style={{ background: 'rgba(34,197,94,.12)', border: '1px solid rgba(34,197,94,.3)', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 13, color: 'var(--success)' }}>Paramètres enregistrés.</div>}
 
       <div className="card" style={{ padding: 0, overflow: 'hidden', marginBottom: 16 }}>
@@ -999,9 +760,23 @@ function TabOrg({ locations, onLocationsChange }) {
             {/* Content */}
             <div style={{ padding: '20px 24px', overflowY: 'auto', maxHeight: 'calc(100vh - 320px)' }}>
               {activeSection === 'global'  && <GroupRows groups={globalGroups}  setGroups={setGlobalGroups} />}
-              {activeSection === 'mailbox' && <MailboxRows mailboxes={sharedMailboxes} setMailboxes={setSharedMailboxes} />}
               {activeSection === 'country' && <GroupRows groups={countryGroups} setGroups={setCountryGroups} showLocation showCities locations={locations} />}
-              {activeSection === 'comm'    && <CommGroupRows groups={communicationGroups} setGroups={setCommunicationGroups} locations={locations} allowedRoles={pointageRoles} />}
+              {activeSection === 'mailbox' && (
+                <>
+                  <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 14, lineHeight: 1.5 }}>
+                    Permission Exchange posée sur la boîte elle-même (pas un groupe). <b>Global</b> : tous les employés, sans exception. <b>Global décoché</b> : choisis d'abord le ou les pays, puis, si besoin, le ou les départements (sans département : toutes les personnes du pays).
+                  </div>
+                  <CommGroupRows mailbox groups={mailboxes} setGroups={setMailboxes} locations={locations} allowedRoles={pointageRoles} />
+                </>
+              )}
+              {activeSection === 'comm'    && (
+                <>
+                  <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 14, lineHeight: 1.5 }}>
+                    Groupes de distribution (listes de diffusion) ajoutés selon le département. Si Graph refuse l'ajout d'un membre (liste mail-enabled), l'app bascule automatiquement sur Exchange PowerShell avec l'email indiqué.
+                  </div>
+                  <CommGroupRows groups={communicationGroups} setGroups={setCommunicationGroups} locations={locations} allowedRoles={pointageRoles} />
+                </>
+              )}
             </div>
           </div>
 
@@ -1056,7 +831,7 @@ function TabOnboarding() {
 
   return (
     <form onSubmit={handleSave}>
-      {error && <div className="error-box">{error}</div>}
+      {error && <div className="error-box" role="alert">{error}</div>}
       {saved && <div style={{ background: 'rgba(34,197,94,.12)', border: '1px solid rgba(34,197,94,.3)', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 13, color: 'var(--success)' }}>Paramètres enregistrés.</div>}
 
       {/* Mot de passe employé */}
@@ -1436,7 +1211,7 @@ function TabPointage({ locations, onLocationsChange }) {
 
   return (
     <div>
-      {error && <div className="error-box">{error}</div>}
+      {error && <div className="error-box" role="alert">{error}</div>}
 
       {/* ── Pills filiales + bouton créer ── */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 20 }}>
@@ -1893,7 +1668,7 @@ function TabSchemas() {
         </button>
       </div>
 
-      {error && <div className="error-box" style={{ marginBottom: 14 }}>{error}</div>}
+      {error && <div className="error-box" role="alert" style={{ marginBottom: 14 }}>{error}</div>}
 
       {/* Workspace: grid — canvas colonne 1fr, panel colonne fixe */}
       <div style={{ display: 'grid', gridTemplateColumns: sel ? `1fr 380px` : '1fr', borderRadius: 14, overflow: 'hidden', border: '1px solid rgba(255,255,255,.07)', background: '#0c1017', backgroundImage: 'radial-gradient(rgba(255,255,255,.11) 1px, transparent 1px)', backgroundSize: '22px 22px' }}>
@@ -2048,7 +1823,6 @@ function TabSchemas() {
 
 function TabIcon({ id }) {
   const paths = {
-    users:      [['M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2', 'M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z'], 'M23 21v-2a4 4 0 0 0-3-3.87', 'M16 3.13a4 4 0 0 1 0 7.75'],
     onboarding: [['M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2', 'M12 8L6.7 13.3c-1.1 1.1-1.1 2.9 0 4L12 22l10-10-4.7-4.7c-1.1-1.1-2.9-1.1-4 0L8 12', 'M22 2L13.4 10.6', 'M15 2H22V9']],
     api:        [['M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71'], ['M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71']],
     org:        [['M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z']],
@@ -2065,7 +1839,6 @@ function TabIcon({ id }) {
 }
 
 const TABS = [
-  { id: 'users',      label: 'Utilisateurs' },
   { id: 'onboarding', label: 'Onboarding'   },
   { id: 'api',        label: 'API'           },
   { id: 'org',        label: 'Groupes'       },
@@ -2086,8 +1859,7 @@ const DEFAULT_LOCATIONS = [
 // ─── Admin page ───────────────────────────────────────────────────────────────
 
 export default function Admin() {
-  const { user: me } = useUser();
-  const [activeTab, setActiveTab] = useState('users');
+  const [activeTab, setActiveTab] = useState('onboarding');
   const [locations, setLocations] = useState(DEFAULT_LOCATIONS);
 
   useEffect(() => {
@@ -2158,7 +1930,6 @@ export default function Admin() {
         ))}
       </div>
 
-      {activeTab === 'users'      && <TabUsers me={me} />}
       {activeTab === 'onboarding' && <TabOnboarding />}
       {activeTab === 'api'        && <TabAPI />}
       {activeTab === 'org'        && <TabOrg locations={locations} onLocationsChange={setLocations} />}

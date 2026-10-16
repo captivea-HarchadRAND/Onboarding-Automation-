@@ -1,4 +1,9 @@
+// [EN-TÊTE] Transfer.jsx — module Onboarding, administrateurs : changement de poste / pays (/transfer). Recherche l'employé, montre
+// ses groupes actuels et un aperçu des groupes à ajouter, puis POST /api/onboardings/transfer. Le serveur ne retire QUE les groupes
+// gérés par l'app (jamais « All Users », jamais les accès clients).
+
 import { useState, useEffect, useRef } from 'react';
+import Select from '../components/Select';
 import { api } from '../api';
 import { JOB_ROLES } from '../jobRoles';
 
@@ -308,7 +313,7 @@ export default function Transfer() {
         </div>
       </div>
 
-      {error && <div className="error-box" style={{ marginBottom: 16 }}>{error}</div>}
+      {error && <div className="error-box" role="alert" style={{ marginBottom: 16 }}>{error}</div>}
 
       <div className="card" style={{ marginBottom: 16 }}>
         <div className="form-group" style={{ marginBottom: 0 }}>
@@ -396,13 +401,13 @@ export default function Transfer() {
               {!isGlobal && citiesForLocation.length > 0 && (
                 <div className="form-group" style={{ marginTop: 12 }}>
                   <label>Ville *</label>
-                  <select
+                  <Select
                     value={form.city}
                     onChange={e => setForm(f => ({ ...f, city: e.target.value }))}
                   >
                     <option value="">Sélectionner…</option>
                     {citiesForLocation.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
-                  </select>
+                  </Select>
                 </div>
               )}
 

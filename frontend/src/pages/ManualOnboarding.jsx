@@ -1,4 +1,10 @@
+// [EN-TÊTE] ManualOnboarding.jsx — module Onboarding, administrateurs : /new/manual (AUCUN lien dans le menu, adresse à saisir).
+// Pour un compte M365 déjà créé à la main : ajoute la personne à son groupe principal et aux groupes SharePoint/communication
+// selon poste/localisation/ville, puis invitation GitHub (POST /api/onboardings/manual). Sert aussi à compléter un onboarding
+// dont la phase « groupes » a été interrompue.
+
 import { useState, useEffect, useRef } from 'react';
+import Select from '../components/Select';
 import { api } from '../api';
 import { JOB_ROLES } from '../jobRoles';
 
@@ -264,7 +270,7 @@ export default function ManualOnboarding() {
         </div>
       </div>
 
-      {error && <div className="error-box">{error}</div>}
+      {error && <div className="error-box" role="alert">{error}</div>}
 
       <form onSubmit={handleSubmit}>
         <div className="card" style={{ marginBottom: 16 }}>
@@ -306,13 +312,13 @@ export default function ManualOnboarding() {
           {!isGlobal && citiesForLocation.length > 0 && (
             <div className="form-group" style={{ marginTop: 12 }}>
               <label>Ville *</label>
-              <select
+              <Select
                 value={form.city}
                 onChange={e => setForm(f => ({ ...f, city: e.target.value }))}
               >
                 <option value="">Sélectionner…</option>
                 {citiesForLocation.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
-              </select>
+              </Select>
             </div>
           )}
 

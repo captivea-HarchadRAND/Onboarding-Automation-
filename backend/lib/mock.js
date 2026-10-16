@@ -1,3 +1,7 @@
+// [EN-TÊTE] backend/lib/mock.js — simulation de Graph pour le développement (MOCK_GRAPH=true) : mêmes fonctions que
+// group.js / license.js / user.js avec des données fictives. MOCK_DELAY_MS règle la durée de chaque étape,
+// MOCK_FAIL_STEP=1|2|3 force un échec (compte, groupe, licence) pour tester l'annulation. Ne jamais activer sur le VPS.
+
 const { v4: uuidv4 } = require('uuid');
 const { generatePassword } = require('./user');
 

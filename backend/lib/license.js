@@ -1,3 +1,7 @@
+// [EN-TÊTE] backend/lib/license.js — licences Microsoft 365 via Graph : listAvailableLicenses (avec le nombre restant),
+// assignLicense (utilisateur + SKU). Remplacé par lib/mock.js quand MOCK_GRAPH=true.
+// NB : assignLicense peut échouer tant qu'Exchange n'a pas préparé la boîte ; server.js réessaie alors automatiquement.
+
 const { graphFetch } = require('./graph');
 
 // Noms lisibles pour les SKUs les plus courants

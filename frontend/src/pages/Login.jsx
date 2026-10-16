@@ -1,3 +1,7 @@
+// [EN-TÊTE] Login.jsx — page de connexion PAR MOT DE PASSE, accessible seulement sur /login/backup (accès de secours, administrateurs).
+// Flux : email + mot de passe → /api/auth/login → (si SMTP configuré) code 2FA par email → session. Le serveur refuse les
+// non-administrateurs. La fusée animée n'est que décorative. La connexion normale est LoginSSO.jsx.
+
 import { useState } from 'react';
 import { useUser } from '../context/UserContext';
 import { api } from '../api';
@@ -448,11 +452,11 @@ export default function Login() {
           {/* Card */}
           <div className="card" style={{ padding: 28, display: status === 'success' ? 'none' : undefined }}>
             <p style={{ fontSize: 13, color: 'var(--muted)', margin: '0 0 20px', lineHeight: 1.5 }}>
-              Entrez vos identifiants pour continuer
+              Accès de secours, réservé aux administrateurs. Les autres comptes se connectent avec Microsoft.
             </p>
 
             {error && (
-              <div className="error-box" style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
+              <div className="error-box" role="alert" style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" style={{ flexShrink: 0 }}>
                   <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
                 </svg>

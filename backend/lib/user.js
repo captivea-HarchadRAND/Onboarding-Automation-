@@ -1,3 +1,8 @@
+// [EN-TÊTE] backend/lib/user.js — comptes Microsoft 365 via Graph : createUser (génère un mot de passe temporaire, renvoie
+// userPrincipalName et temporaryPassword), deleteUser (utilisé pour l'ANNULATION quand la phase 1 d'un onboarding échoue),
+// generatePassword. Le mot de passe n'est jamais stocké en base (voir tempPasswordStore dans server.js).
+// Remplacé par lib/mock.js quand MOCK_GRAPH=true.
+
 const { graphFetch } = require('./graph');
 const { randomBytes }  = require('crypto');
 

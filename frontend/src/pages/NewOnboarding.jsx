@@ -1,5 +1,14 @@
+// [EN-TÊTE] NewOnboarding.jsx — module Onboarding : assistant en 5 étapes (/new).
+//   1 Identité (prénom, nom, poste, localisation, ville, email + domaine) · 2 Groupe de sécurité (proposé automatiquement d'après
+//   Administration → Pointage, sinon recherche manuelle) · 3 Licence + code de confirmation IT (LAUNCH_PASSWORD) + compte à rebours
+//   · 4 Exécution (sondage du statut) · 5 Résultat (email + mot de passe temporaire, affiché une seule fois).
+//   Appelle : /api/graph/licenses, /api/graph/groups, /api/onboardings/resolve-groups (aperçu des autres groupes),
+//   /api/auth/verify-launch-password, POST /api/onboardings, GET /api/onboardings/:id.
+//   NB : lit /api/admin/settings (réservé aux admins) pour les domaines ; un opérateur retombe sur les valeurs par défaut.
+
 import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
+import Select from '../components/Select';
 import { api } from '../api';
 import { JOB_ROLES } from '../jobRoles';
 
@@ -654,7 +663,7 @@ export default function NewOnboarding() {
       </div>
 
       <StepIndicator current={step} />
-      {error && <div className="error-box">{error}</div>}
+      {error && <div className="error-box" role="alert">{error}</div>}
 
       {/* ── Step 1: Infos employé ── */}
       {step === 1 && (
@@ -741,14 +750,14 @@ export default function NewOnboarding() {
           {citiesForLocation.length > 0 && (
             <div className="form-group">
               <label>Ville *</label>
-              <select
+              <Select
                 value={form.city}
                 onChange={e => setForm(f => ({ ...f, city: e.target.value }))}
                 style={{ height: 38, width: '100%', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--surface2)', color: 'var(--text)', padding: '0 12px' }}
               >
                 <option value="">Sélectionner une ville...</option>
                 {citiesForLocation.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
-              </select>
+              </Select>
             </div>
           )}
 
@@ -770,13 +779,13 @@ export default function NewOnboarding() {
                 fontSize: 13, color: 'var(--muted)',
               }}>@</div>
               {domains.length > 1 ? (
-                <select
+                <Select
                   value={form.emailDomain}
                   onChange={e => setForm(f => ({ ...f, emailDomain: e.target.value }))}
                   style={{ borderRadius: '0 8px 8px 0', height: 38, borderLeft: 'none' }}
                 >
                   {domains.map(d => <option key={d} value={d}>{d}</option>)}
-                </select>
+                </Select>
               ) : (
                 <div style={{
                   borderRadius: '0 8px 8px 0', height: 38, borderLeft: 'none',
