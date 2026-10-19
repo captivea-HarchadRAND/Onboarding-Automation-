@@ -103,6 +103,11 @@ const SETTINGS_MAP = {
 };
 
 const MOCK_GRAPH = process.env.MOCK_GRAPH === 'true';
+// Le mode simulé ouvre une connexion administrateur sans authentification (/api/auth/microsoft/callback?mock=1) :
+// on refuse de démarrer en production plutôt que de l'exposer par erreur.
+if (MOCK_GRAPH && process.env.NODE_ENV === 'production') {
+  throw new Error('MOCK_GRAPH=true est interdit en production (connexion administrateur sans authentification).');
+}
 
 // Mot de passe généré en mémoire uniquement — jamais stocké en DB
 // Retourné une seule fois au poll de complétion, puis effacé
@@ -1874,7 +1879,8 @@ app.get('/api/monitoring/ai-usage', auth, requireModule('monitoring'), async (re
 // Relit les rapports Excel dans SharePoint (lecture seule, app Entra dédiée) et met à jour le monitoring.
 async function syncMonitoringFromSharePoint(trigger) {
   const db = await getDB();
-  const out = await spSync.syncAll(db, { isMock: MOCK_GRAPH });
+  const out = await spSync.syncAll(db, { isMock: MOCK_GRAPH, trigger });
+  db.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('monitoring_sync_history', ?)", [JSON.stringify(spSync.status().history)]);
   saveDB();
   for (const r of out.results) {
     logAction(r.ok ? `[monitoring] SharePoint (${trigger}) ${r.tool} : ${r.months.length} mois synchronisé(s)` : `[monitoring] SharePoint (${trigger}) ${r.tool} : échec — ${r.error}`);
@@ -1907,7 +1913,27 @@ app.post('/api/monitoring/ai-usage/sync', auth, requireRole('admin'), requireMod
   }
 });
 
-app.put('/api/monitoring/ai-usage/prices', auth, requireRole('admin'), requireModule('monitoring'), async (req, res) => {
+// Historique des synchronisations (page Notifications) : supprimer une entrée (par sa date) ou tout effacer.
+async function saveSyncHistory() {
+  const db = await getDB();
+  db.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('monitoring_sync_history', ?)", [JSON.stringify(spSync.status().history)]);
+  saveDB();
+}
+app.delete('/api/monitoring/ai-usage/sync-history', auth, requireRole('admin'), requireModule('monitoring'), async (req, res) => {
+  const n = spSync.removeHistory();
+  await saveSyncHistory();
+  logAction(`[monitoring] Historique des synchronisations effacé par ${req.user.email} (${n} entrée(s))`);
+  res.json({ ok: true, removed: n });
+});
+app.delete('/api/monitoring/ai-usage/sync-history/:at', auth, requireRole('admin'), requireModule('monitoring'), async (req, res) => {
+  const n = spSync.removeHistory(String(req.params.at));
+  if (!n) return res.status(404).json({ error: 'Entrée introuvable (déjà supprimée ?)' });
+  await saveSyncHistory();
+  logAction(`[monitoring] Entrée de l'historique des synchronisations supprimée par ${req.user.email}`);
+  res.json({ ok: true, removed: n });
+});
+
+app.put('/api/monitoring/ai-usage/prices',auth, requireRole('admin'), requireModule('monitoring'), async (req, res) => {
   const db = await getDB();
   let prices;
   try {
@@ -2855,6 +2881,8 @@ getDB().then(async () => {
     const db = await getDB();
     const row = dbRows(db, "SELECT value FROM settings WHERE key='monitoring_sharepoint'")[0];
     if (row) spSync.setOverride(JSON.parse(row.value));
+    const hist = dbRows(db, "SELECT value FROM settings WHERE key='monitoring_sync_history'")[0];
+    if (hist) spSync.setHistory(JSON.parse(hist.value));
   } catch (err) { console.error('[monitoring-sync] réglage illisible, valeurs .env utilisées'); }
   if (!MOCK_GRAPH) {
     // Se déclenche seulement si l'emplacement est configuré (.env ou Paramètres), sans redémarrage nécessaire.

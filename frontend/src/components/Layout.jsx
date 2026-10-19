@@ -70,6 +70,7 @@ const ROUTE_LABELS = {
   '/monitoring':  'Monitoring',
   '/portal-admin': 'Gestion du portail',
   '/monitoring/admin': 'Administration',
+  '/monitoring/notifications': 'Notifications',
   '/admin':       'Administration',
   '/security':    'Sécurité',
   '/offboarding': 'Offboarding',

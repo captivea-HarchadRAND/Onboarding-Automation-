@@ -22,6 +22,7 @@ import Transfer from './pages/Transfer';
 import Portal from './pages/Portal';
 import Monitoring from './pages/Monitoring';
 import MonitoringAdmin from './pages/MonitoringAdmin';
+import MonitoringNotifications from './pages/MonitoringNotifications';
 import MailboxAccess from './pages/MailboxAccess';
 import PortalAdmin from './pages/PortalAdmin';
 import { canAccess } from './modules';
@@ -47,7 +48,8 @@ function AppRoutes() {
         <Route path="portal-admin" element={<Guard adminOnly superAdminOnly><PortalAdmin /></Guard>} />
         <Route path="dashboard" element={<Guard module="onboarding"><Dashboard /></Guard>} />
         <Route path="monitoring" element={<Guard module="monitoring"><Monitoring /></Guard>} />
-        <Route path="monitoring/admin" element={<Guard adminOnly module="monitoring"><MonitoringAdmin /></Guard>} />
+        <Route path="monitoring/notifications" element={<Guard adminOnly module="monitoring"><MonitoringNotifications /></Guard>} />
+        <Route path="monitoring/admin"element={<Guard adminOnly module="monitoring"><MonitoringAdmin /></Guard>} />
         <Route path="mailbox-access" element={<Guard adminOnly module="onboarding"><MailboxAccess /></Guard>} />
         <Route path="new" element={<Guard module="onboarding"><NewOnboarding /></Guard>} />
         <Route path="new/manual" element={<ManualOnboarding />} />

@@ -1,6 +1,10 @@
 // Synchronisation du monitoring depuis les rapports Excel du workflow n8n, stockés dans SharePoint.
 // Lecture seule : l'app télécharge `Report.xlsx` de chaque outil via Microsoft Graph et réutilise
 // la même validation / le même stockage que l'ingestion n8n (aiUsage.parsePayload / ingest).
+// Le workflow n8n écrit UN rapport par société (Claude, ChatGPT) : un chemin qui contient {societe} est lu
+// pour chaque pays de la liste (Monitoring > Administration > Pays) ; les onglets d'un même mois sont
+// regroupés en un seul relevé (sinon le dernier pays lu remplacerait les autres). Une société sans rapport
+// (404) est simplement ignorée. Fireflies : un seul rapport (équipe unique, « Captivea Group »).
 //
 // Moindre privilège : utiliser une app Entra dédiée avec la seule permission d'application
 // `Sites.Selected` (accordée en « read » sur le site concerné, pas sur tout le tenant).
@@ -15,11 +19,12 @@ const aiUsage = require('./aiUsage');
 const { readWorkbook } = require('./xlsx');
 const { retryFetch } = require('./netFetch');
 
-const BASE = 'Knowledge/IT knowledge/Management/SI/AI/Captivea France';
+const BASE = 'Knowledge/IT knowledge/Management/SI/AI';
+const SOCIETE = '{societe}';
 const DEFAULT_PATHS = {
-  claude:    `${BASE}/Claude/Report/Report.xlsx`,
-  chatgpt:   `${BASE}/ChatGPT/Report/Report.xlsx`,
-  fireflies: `${BASE}/Fireflies/Report/Rapport Supervision Fireflies.xlsx`,
+  claude:    `${BASE}/${SOCIETE}/Claude/Report/Report.xlsx`,
+  chatgpt:   `${BASE}/${SOCIETE}/ChatGPT/Report/Report.xlsx`,
+  fireflies: `${BASE}/Captivea Group/Fireflies/Report/Rapport Supervision Fireflies.xlsx`,
 };
 const MAX_BYTES = 20 * 1024 * 1024;
 const MAX_SHEETS = 12; // les 12 mois les plus récents suffisent (le tableau de bord en affiche 7)
@@ -90,14 +95,26 @@ function reportPath(tool) {
   return p;
 }
 
-async function download(tool) {
+// Rapports à lire pour un outil : un par société si le chemin contient {societe}, sinon un seul.
+function reportTargets(tool, societes) {
+  const p = reportPath(tool);
+  if (!p.includes(SOCIETE)) return [{ societe: null, path: p }];
+  return societes.map(s => ({ societe: s, path: p.split(SOCIETE).join(s) }))
+    .filter(t => !t.path.split('/').some(seg => seg === '..' || seg === '.' || seg === ''));
+}
+
+// null = rapport absent (404), seulement si allowMissing (société sans rapport pour cet outil).
+async function download(filePath, { allowMissing = false } = {}) {
   const { token } = await getCredential().getToken('https://graph.microsoft.com/.default');
   const drive = encodeURIComponent(driveId());
-  const path = reportPath(tool).split('/').map(encodeURIComponent).join('/');
+  const path = filePath.split('/').map(encodeURIComponent).join('/');
   const res = await retryFetch(`https://graph.microsoft.com/v1.0/drives/${drive}/root:/${path}:/content`, {
     headers: { Authorization: `Bearer ${token}` },
   }, { attemptTimeoutMs: 20000, label: 'SharePoint' });
-  if (res.status === 404) throw new Error('Rapport introuvable dans SharePoint (chemin à vérifier)');
+  if (res.status === 404) {
+    if (allowMissing) return null;
+    throw new Error('Rapport introuvable dans SharePoint (chemin à vérifier)');
+  }
   if (res.status === 401 || res.status === 403) throw new Error('Accès SharePoint refusé (permission Sites.Selected à accorder sur le site)');
   if (!res.ok) throw new Error(`Lecture SharePoint impossible (HTTP ${res.status})`);
   const declared = Number(res.headers.get('content-length') || 0);
@@ -127,20 +144,60 @@ function monthlyPayloads(tool, workbook) {
   return { parsed, skipped };
 }
 
-const state = { running: false, last: null };
+// Regroupe les relevés de plusieurs sociétés : un seul relevé par mois (lignes et pays manquants cumulés).
+function mergeByMonth(list) {
+  const byMonth = new Map();
+  for (const p of list) {
+    const m = byMonth.get(p.month);
+    if (!m) { byMonth.set(p.month, { ...p, rows: [...p.rows], missing: [...p.missing] }); continue; }
+    m.rows.push(...p.rows);
+    m.missing = [...new Set([...m.missing, ...p.missing])];
+    m.reference = m.reference && p.reference;
+  }
+  return [...byMonth.values()];
+}
 
-async function syncAll(db, { isMock = false } = {}) {
+// Historique des synchronisations (les plus récentes d'abord), conservé en base par le serveur (setHistory / onSync).
+const MAX_HISTORY = 30;
+const state = { running: false, last: null, history: [] };
+
+function setHistory(list) {
+  state.history = Array.isArray(list) ? list.slice(0, MAX_HISTORY) : [];
+  state.last = state.history[0] || null;
+}
+
+// Supprime une entrée (identifiée par sa date) ou, sans argument, tout l'historique. Renvoie le nombre d'entrées retirées.
+function removeHistory(at) {
+  const before = state.history.length;
+  setHistory(at === undefined ? [] : state.history.filter(h => h.at !== at));
+  return before - state.history.length;
+}
+
+async function syncAll(db, { isMock = false, trigger = '' } = {}) {
   if (state.running) throw Object.assign(new Error('Synchronisation déjà en cours'), { httpStatus: 409 });
   if (!isConfigured()) throw Object.assign(new Error('Lecture SharePoint non configurée'), { httpStatus: 503 });
   state.running = true;
   const results = [];
   try {
+    const societes = aiUsage.readCountries(db).countries.map(c => c.name);
     for (const tool of Object.keys(aiUsage.TOOLS)) {
       try {
-        const { parsed, skipped } = monthlyPayloads(tool, readWorkbook(await download(tool)));
+        const targets = reportTargets(tool, societes);
+        const perSociete = targets.some(t => t.societe);
+        const all = [], skipped = [], read = [];
+        for (const t of targets) {
+          const buf = await download(t.path, { allowMissing: perSociete });
+          if (!buf) continue;
+          const out = monthlyPayloads(tool, readWorkbook(buf));
+          all.push(...out.parsed);
+          skipped.push(...out.skipped.map(x => (t.societe ? `${t.societe} — ${x}` : x)));
+          if (t.societe) read.push(t.societe);
+        }
+        if (perSociete && !read.length) throw new Error('Aucun rapport trouvé dans SharePoint pour les pays de la liste (chemin à vérifier)');
+        const parsed = mergeByMonth(all);
         if (!parsed.length) throw new Error(skipped[0] || 'Aucun onglet mensuel trouvé dans le rapport');
         for (const p of parsed) aiUsage.ingest(db, p, { isMock });
-        results.push({ tool, ok: true, months: parsed.map(p => p.month).sort(), skipped });
+        results.push({ tool, ok: true, months: parsed.map(p => p.month).sort(), skipped, ...(perSociete ? { societes: read } : {}) });
       } catch (e) {
         // Message de Graph / xlsx : jamais de jeton ni de secret dedans.
         results.push({ tool, ok: false, error: String(e.message || e).slice(0, 200) });
@@ -148,9 +205,10 @@ async function syncAll(db, { isMock = false } = {}) {
     }
   } finally {
     state.running = false;
-    state.last = { at: new Date().toISOString(), results };
+    state.last = { at: new Date().toISOString(), trigger, results };
+    state.history = [state.last, ...state.history].slice(0, MAX_HISTORY);
   }
   return state.last;
 }
 
-module.exports = { isConfigured, setOverride, parseSettings, settingsView, syncAll, status: () => ({ configured: isConfigured(), running: state.running, last: state.last }), monthlyPayloads, DEFAULT_PATHS };
+module.exports = { isConfigured, setOverride, parseSettings, settingsView, syncAll, setHistory, removeHistory, status: () => ({ configured: isConfigured(), running: state.running, last: state.last, history: state.history }), monthlyPayloads, mergeByMonth, reportTargets, DEFAULT_PATHS };

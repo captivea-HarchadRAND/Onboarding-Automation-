@@ -193,7 +193,7 @@ export default function MonitoringAdmin() {
         </p>
         <div style={{ display: 'grid', gap: 16 }}>
           {TOOLS.map(t => field(t.key, `Rapport ${data.tools[t.key].label}`, sp.sources.paths[t.key], sp.effective.paths[t.key],
-            t.key === 'claude' ? 'Chemin du fichier dans la bibliothèque : dossier/sous-dossier/fichier.xlsx' : null))}
+            t.key === 'claude' ? 'Chemin du fichier dans la bibliothèque : dossier/sous-dossier/fichier.xlsx. {societe} est remplacé par chaque pays de l\'onglet « Pays » (un rapport par société, comme dans le workflow n8n) ; une société sans rapport est ignorée.' : null))}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginTop: 18 }}>
           <button type="button" className="btn btn-primary" disabled={spBusy} onClick={() => saveSharePoint(false)}>Enregistrer</button>
