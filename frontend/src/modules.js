@@ -5,6 +5,7 @@ export const MODULE_ICONS = {
   portal:     ['M3 3h7v7H3z', 'M14 3h7v7h-7z', 'M14 14h7v7h-7z', 'M3 14h7v7H3z'],
   onboarding: ['M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2', 'M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z', 'M19 8v6', 'M22 11h-6'],
   monitoring: ['M22 12h-4l-3 9L9 3l-3 9H2'],
+  bell:       ['M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9', 'M10.3 21a1.94 1.94 0 0 0 3.4 0'],
 };
 
 export const MODULES = [
@@ -40,6 +41,7 @@ export const MODULES = [
     prefixes: ['/monitoring'],
     nav: [
       { to: '/monitoring', label: 'Licences IA', icon: 'monitoring', end: true },
+      { to: '/monitoring/notifications', label: 'Notifications', icon: 'bell', adminOnly: true },
     ],
     // Administration du module : emplacement des rapports (SharePoint) et prix des licences.
     adminNav: [

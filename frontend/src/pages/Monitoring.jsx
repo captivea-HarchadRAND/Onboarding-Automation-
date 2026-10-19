@@ -65,13 +65,14 @@ function fmtReceived(s) {
 const countryLabel = c => (c || '—').replace(/^Captivea\s+/i, '');
 
 // Même règle que côté serveur (aiUsage.levelOf), pour le mois months[i] :
-//   vert = utilise · jaune = utilise peu · orange = pas utilisé ce mois-ci
+//   vert = lowBelow ou plus · jaune = plus de 0, sous lowBelow · orange = 0 ce mois-ci
 //   rouge = 0 utilisation ce mois-ci et le mois précédent (inactif depuis 2 mois ou plus)
+const valueLevel = (tl, v) => (v === 0 ? 'orange' : v < tl.lowBelow ? 'jaune' : 'vert');
 function levelFor(tl, vals, months, i) {
   const v = vals[months[i]];
   if (v === undefined || v === null) return null;
   if (v === 0 && i >= 1 && vals[months[i - 1]] === 0) return 'rouge';
-  return v < tl.orangeBelow ? 'orange' : v < tl.lowBelow ? 'jaune' : 'vert';
+  return valueLevel(tl, v);
 }
 
 // Définition de chaque niveau, avec les seuils de l'outil.
@@ -79,8 +80,8 @@ function levelHelp(tl) {
   const u = tl.unit;
   return {
     vert: `Au moins ${nf0.format(tl.lowBelow)} ${u} dans le mois.`,
-    jaune: `Entre ${nf0.format(tl.orangeBelow)} et ${nf0.format(tl.lowBelow)} ${u} dans le mois.`,
-    orange: `Moins de ${nf0.format(tl.orangeBelow)} ${u} dans le mois.`,
+    jaune: `Plus de 0 et moins de ${nf0.format(tl.lowBelow)} ${u} dans le mois.`,
+    orange: `Aucune utilisation ce mois-ci (0 ${u}).`,
     rouge: 'Aucune utilisation ce mois-ci ni le mois précédent (0 depuis 2 mois ou plus).',
   };
 }
@@ -322,6 +323,15 @@ export default function Monitoring() {
   const [seeding, setSeeding] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState(null);
+  // Avertissements masqués : la clé contient le texte, un nouveau problème réapparaît donc.
+  const [dismissed, setDismissed] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('monitoring_dismissed') || '[]')); } catch (_) { return new Set(); }
+  });
+  const dismiss = k => setDismissed(prev => {
+    const next = new Set(prev).add(k);
+    try { localStorage.setItem('monitoring_dismissed', JSON.stringify([...next].slice(-50))); } catch (_) { /* stockage indisponible : masqué pour cette session */ }
+    return next;
+  });
 
   const [tab, setTab] = useState('overview');
   const [month, setMonth] = useState(null);
@@ -430,9 +440,11 @@ export default function Monitoring() {
 
     return (
       <>
-        {missing.length > 0 && (
-          <div style={{ padding: '10px 14px', borderRadius: 10, border: '1px dashed var(--border)', background: 'var(--surface)', fontSize: 12, color: 'var(--text2)' }}>
-            <b>Relevé introuvable :</b> {missing.join(', ')}.
+        {missing.length > 0 && !dismissed.has(`missing|${missing.join(',')}`) && (
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: '10px 14px', borderRadius: 10, border: '1px dashed var(--border)', background: 'var(--surface)', fontSize: 12, color: 'var(--text2)' }}>
+            <div style={{ flex: 1 }}><b>Relevé introuvable :</b> {missing.join(', ')}.</div>
+            <button type="button" className="btn btn-ghost" style={{ padding: '2px 10px', fontSize: 12, flexShrink: 0 }}
+              onClick={() => dismiss(`missing|${missing.join(',')}`)}>Masquer</button>
           </div>
         )}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 12 }}>
@@ -546,11 +558,17 @@ export default function Monitoring() {
 
     return (
       <>
-        <div style={{ fontSize: 12, color: 'var(--text2)', padding: '10px 14px', borderRadius: 10, border: '1px solid rgba(99,102,241,.3)', background: 'rgba(99,102,241,.08)' }}>
-          {TOOL_NOTE[key]}
-          {tl.receivedAt && <> Relevé reçu le {fmtReceived(tl.receivedAt)}.</>}
-          {tl.missing.length > 0 && <> <b>Fichier manquant :</b> {tl.missing.join(', ')}.</>}
-        </div>
+        {!dismissed.has(`note|${key}|${tl.receivedAt}|${tl.missing.join(',')}`) && (
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, fontSize: 12, color: 'var(--text2)', padding: '10px 14px', borderRadius: 10, border: '1px solid rgba(99,102,241,.3)', background: 'rgba(99,102,241,.08)' }}>
+            <div style={{ flex: 1 }}>
+              {TOOL_NOTE[key]}
+              {tl.receivedAt && <> Relevé reçu le {fmtReceived(tl.receivedAt)}.</>}
+              {tl.missing.length > 0 && <> <b>Fichier manquant :</b> {tl.missing.join(', ')}.</>}
+            </div>
+            <button type="button" className="btn btn-ghost" style={{ padding: '2px 10px', fontSize: 12, flexShrink: 0 }}
+              onClick={() => dismiss(`note|${key}|${tl.receivedAt}|${tl.missing.join(',')}`)}>Masquer</button>
+          </div>
+        )}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 12 }}>
           <Kpi label="Licences payantes" value={nf0.format(now.lic)} spark={<Spark values={span.map(m => agg(key, m).lic)} />}
             delta={before && <Delta neutral cur={now.lic} prev={before.lic} />} was={before && nf0.format(before.lic)} />
@@ -788,11 +806,16 @@ export default function Monitoring() {
           {syncMsg.text}
         </div>
       )}
-      {data?.sharepoint?.last?.results.some(r => !r.ok) && !syncMsg && (
-        <p role="alert" style={{ fontSize: 12, color: LEVELS.orange.color, margin: 0 }}>
-          Dernière synchronisation SharePoint incomplète : {data.sharepoint.last.results.filter(r => !r.ok).map(r => `${r.tool} (${r.error})`).join(', ')}
-        </p>
-      )}
+      {(() => {
+        const text = (data?.sharepoint?.last?.results || []).filter(r => !r.ok).map(r => `${r.tool} (${r.error})`).join(', ');
+        if (!text || syncMsg || dismissed.has(`sync|${text}`)) return null;
+        return (
+          <div role="alert" style={{ display: 'flex', alignItems: 'flex-start', gap: 12, fontSize: 12, color: LEVELS.orange.color }}>
+            <span style={{ flex: 1 }}>Dernière synchronisation SharePoint incomplète : {text}</span>
+            <button type="button" className="btn btn-ghost" style={{ padding: '2px 10px', fontSize: 12, flexShrink: 0 }} onClick={() => dismiss(`sync|${text}`)}>Masquer</button>
+          </div>
+        );
+      })()}
 
       {error && <div className="error-box" role="alert" style={{ marginBottom: 0 }}>{error}</div>}
 
@@ -817,7 +840,6 @@ export default function Monitoring() {
 // Usage d'un mois, coloré selon le niveau (sans le « rouge », qui dépend du mois précédent).
 function UsageCell({ tl, v }) {
   if (v === undefined || v === null) return <span style={{ color: 'var(--muted)' }}>—</span>;
-  const lv = v < tl.orangeBelow ? 'orange' : v < tl.lowBelow ? 'jaune' : 'vert';
-  const l = LEVELS[lv];
+  const l = LEVELS[valueLevel(tl, v)];
   return <span style={{ display: 'inline-block', minWidth: 34, textAlign: 'center', padding: '2px 7px', borderRadius: 6, fontSize: 12, fontWeight: 800, fontVariantNumeric: 'tabular-nums', background: l.bg, color: l.color }}>{fmtUsage(v)}</span>;
 }

@@ -8,13 +8,12 @@
 //   - pays     : société d'origine du membre
 const { v4: uuidv4 } = require('uuid');
 
-// orangeBelow : en dessous = pas utilisé ce mois-ci (orange).
-// lowBelow    : en dessous = utilise peu (jaune) ; au-delà = utilise (vert).
-// Seuils du tableau de bord n8n « Supervision des licences IA ».
+// lowBelow : en dessous (et plus de 0) = utilise peu (jaune) ; à partir de lowBelow = utilise (vert) ; 0 = orange.
+// Seuils (SEUIL) de l'onglet « Suivi utilisation » du workflow n8n « superviser les IA ».
 const TOOLS = {
-  claude:    { label: 'Claude',    unit: 'requêtes', orangeBelow: 10, lowBelow: 50 },
-  chatgpt:   { label: 'ChatGPT',   unit: 'M tokens', orangeBelow: 1,  lowBelow: 5 },
-  fireflies: { label: 'Fireflies', unit: 'réunions', orangeBelow: 1,  lowBelow: 11 },
+  claude:    { label: 'Claude',    unit: 'requêtes', lowBelow: 50 },
+  chatgpt:   { label: 'ChatGPT',   unit: 'M tokens', lowBelow: 5 },
+  fireflies: { label: 'Fireflies', unit: 'réunions', lowBelow: 11 },
 };
 
 // Types de siège facturés : seul Claude a deux tarifs (Premium / Standard, lus dans la colonne « Siège » du rapport).
@@ -174,16 +173,17 @@ function ingest(db, parsed, { isMock = false } = {}) {
 }
 
 // Niveau d'usage d'un compte pour le mois months[i] (null = non analysé : sans licence, hors liste).
-//   vert   : utilise (au-delà de lowBelow)
-//   jaune  : utilise peu (sous lowBelow)
-//   orange : n'a pas utilisé ce mois-ci (sous orangeBelow)
-//   rouge  : aucune utilisation ce mois-ci ni le mois précédent (0 depuis 2 mois ou plus)
+// Même règle que l'onglet « Suivi utilisation » du workflow n8n :
+//   vert   : utilise (lowBelow ou plus)
+//   jaune  : utilise peu (plus de 0, sous lowBelow)
+//   orange : pas utilisé ce mois-ci (0 exactement)
+//   rouge  : 0 ce mois-ci et le mois précédent (inactif depuis 2 mois ou plus)
 function levelOf(tool, vals, months, i) {
   const t = TOOLS[tool];
   const v = vals[months[i]];
   if (v === undefined || v === null) return null;
   if (v === 0 && i >= 1 && vals[months[i - 1]] === 0) return 'rouge';
-  return v < t.orangeBelow ? 'orange' : v < t.lowBelow ? 'jaune' : 'vert';
+  return v === 0 ? 'orange' : v < t.lowBelow ? 'jaune' : 'vert';
 }
 
 const MONTHS_SHOWN = 7; // mois affichés + le mois d'avant pour la comparaison du plus ancien
@@ -210,7 +210,7 @@ function dashboard(db, { isMock = false } = {}) {
   for (const [tool, t] of Object.entries(TOOLS)) {
     const mine = runs.filter(r => r.tool === tool && months.includes(r.month));
     const out = {
-      label: t.label, unit: t.unit, seats: SEATS[tool], orangeBelow: t.orangeBelow, lowBelow: t.lowBelow,
+      label: t.label, unit: t.unit, seats: SEATS[tool], lowBelow: t.lowBelow,
       empty: mine.length === 0, cells: {}, people: [], missing: [], receivedAt: null,
       referenceMonths: references.filter(r => r.tool === tool).map(r => r.month),
     };
@@ -289,11 +289,16 @@ function savePrices(db, input) {
 
 // Pays (sociétés Captivea) proposés dans le filtre du tableau de bord. « name » = libellé affiché ; « aliases » = autres
 // écritures possibles dans la colonne « Pays » des rapports (« France » → « Captivea France »). Comparaison sans accents ni casse.
+// Mêmes sociétés que la CONFIG du workflow n8n ; le nom sert aussi de dossier SharePoint ({societe} dans le chemin des rapports).
 const DEFAULT_COUNTRIES = [
   { name: 'Captivea France', aliases: ['France'] },
   { name: 'Captivea Luxembourg', aliases: ['Luxembourg'] },
+  { name: 'Captivea Suisse', aliases: ['Suisse', 'Switzerland'] },
+  { name: 'Captivea Madagascar', aliases: ['Madagascar'] },
   { name: 'Captivea USA', aliases: ['USA', 'United States', 'États-Unis'] },
+  { name: 'Captivea Canada', aliases: ['Canada'] },
   { name: 'Captivea India', aliases: ['India', 'Inde'] },
+  { name: 'Captivea Group', aliases: ['Group', 'Groupe'] },
 ];
 const MAX_COUNTRIES = 30, MAX_ALIASES = 10;
 const countryKey = s => stripAccents(s).toLowerCase().replace(/\s+/g, ' ').trim();
@@ -413,4 +418,4 @@ function seedDemo(db, { now = new Date() } = {}) {
   return total;
 }
 
-module.exports = { TOOLS, SEATS, isTool, parsePayload, parseMonth, ingest, dashboard, savePrices, saveCountries, summary, seedDemo, levelOf };
+module.exports = { TOOLS, SEATS, isTool, parsePayload, parseMonth, ingest, dashboard, savePrices, saveCountries, readCountries, summary, seedDemo, levelOf };
