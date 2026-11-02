@@ -201,7 +201,7 @@ async function sendPortalInvite(toEmail, name) {
     await getSmtpTransport().sendMail({
       from: sender,
       to: toEmail,
-      subject: 'Votre accès au portail Captivea',
+      subject: "Votre accès au portail d'automatisation Captivea",
       html: `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;padding:0;background:#f1f5f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
 <table width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9;padding:48px 16px">
   <tr><td align="center">
@@ -210,11 +210,11 @@ async function sendPortalInvite(toEmail, name) {
         <div style="display:inline-block;background:rgba(255,255,255,.15);border-radius:12px;padding:10px 18px;margin-bottom:16px">
           <span style="color:#ffffff;font-size:22px;font-weight:700;letter-spacing:-.5px">Captivea</span>
         </div>
-        <p style="margin:0;color:rgba(255,255,255,.85);font-size:13px;letter-spacing:.5px;text-transform:uppercase">Portail interne</p>
+        <p style="margin:0;color:rgba(255,255,255,.85);font-size:13px;letter-spacing:.5px;text-transform:uppercase">Portail d'automatisation</p>
       </td></tr>
       <tr><td style="padding:40px">
         <p style="margin:0 0 8px;color:#1e293b;font-size:18px;font-weight:600">Bienvenue, ${escapeHtml(name)}</p>
-        <p style="margin:0 0 24px;color:#64748b;font-size:14px;line-height:1.7">Un accès au <strong>portail interne Captivea</strong> vient de vous être ouvert. Connectez-vous avec votre compte Microsoft professionnel (<strong>${escapeHtml(toEmail)}</strong>) : aucun mot de passe à créer.</p>
+        <p style="margin:0 0 24px;color:#64748b;font-size:14px;line-height:1.7">Bienvenue à bord ! Votre accès au <strong>portail d'automatisation Captivea</strong> est activé. Connectez-vous en un clic avec votre compte Microsoft (<strong>${escapeHtml(toEmail)}</strong>) : pas de mot de passe, tout passe par le SSO.</p>
         <div style="text-align:center;margin:28px 0">
           <a href="${loginUrl}" style="display:inline-block;background:#4f46e5;color:#ffffff;text-decoration:none;font-size:15px;font-weight:600;padding:14px 32px;border-radius:10px;letter-spacing:-.2px">Se connecter avec Microsoft</a>
         </div>
