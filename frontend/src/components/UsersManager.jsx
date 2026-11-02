@@ -1,7 +1,8 @@
 // [EN-TÊTE] UsersManager.jsx — gestion des utilisateurs et de leurs accès aux modules (affiché par PortalAdmin, SUPER ADMIN seulement).
 // Tableau : une case par module (enregistrée tout de suite via PUT /api/admin/users/:id/modules, annulée si le serveur refuse),
 // création (nom, email, rôle, modules, mot de passe de secours facultatif), modification, mot de passe, désactivation, suppression.
-// Un compte sans mot de passe est actif immédiatement et se connecte par Microsoft. La ligne d'un super admin est verrouillée.
+// Un compte sans mot de passe est actif immédiatement et se connecte par Microsoft ; la création envoie un e-mail
+// d'invitation avec le lien de connexion (résultat affiché dans la bande de statut). La ligne d'un super admin est verrouillée.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Select from './Select';
@@ -62,11 +63,14 @@ export default function UsersManager({ me }) {
   async function handleCreate(e) {
     e.preventDefault(); setError(''); setSaving(true);
     try {
-      await api.post('/api/admin/users', {
+      const { user, invitation } = await api.post('/api/admin/users', {
         name: form.name, email: form.email, role: form.role, password: form.password || undefined,
         ...(form.role === 'admin' ? {} : { modules: form.modules }),
       });
       setModal(null);
+      setNotice(invitation === 'sent'
+        ? { ok: true, text: `${user.name} ajouté : invitation envoyée à ${user.email}.` }
+        : { ok: false, text: `${user.name} ajouté, mais l'invitation n'a pas pu être envoyée (${invitation === 'disabled' ? 'envoi d\'e-mails non configuré' : 'échec de l\'envoi, voir le journal'}). Transmets-lui le lien de connexion du portail.` });
       load();
     } catch (err) { setError(err.message); }
     finally { setSaving(false); }
@@ -279,9 +283,10 @@ export default function UsersManager({ me }) {
             <input id="new-user-password" type="password" autoComplete="new-password" value={form.password} onChange={e => setForm(f => ({ ...f, password: e.target.value }))} />
             <p className="field-hint">Utile seulement pour l'accès de secours d'un administrateur (/login/backup). Les comptes se connectent avec Microsoft.</p>
           </div>
+          <p className="field-hint" style={{ margin: '0 0 16px' }}>Un e-mail d'invitation avec le lien de connexion Microsoft lui sera envoyé.</p>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
             <button type="button" className="btn btn-ghost" onClick={() => setModal(null)}>Annuler</button>
-            <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'Création...' : 'Créer'}</button>
+            <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'Création...' : 'Créer et inviter'}</button>
           </div>
         </form>
         </Modal>

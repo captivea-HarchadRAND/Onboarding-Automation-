@@ -186,6 +186,59 @@ async function send2FACode(toEmail, code) {
 </body></html>`,
   });
 }
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// Invitation au portail (création d'un utilisateur) : lien vers la connexion Microsoft, pas de jeton —
+// c'est le SSO qui prouve l'identité. Renvoie 'sent', 'failed' ou 'disabled' (SMTP non configuré).
+async function sendPortalInvite(toEmail, name) {
+  const sender = get2FASender();
+  if (!sender) return 'disabled';
+  const loginUrl = `${FRONTEND_URL.split(',')[0].trim()}/login`;
+  try {
+    await getSmtpTransport().sendMail({
+      from: sender,
+      to: toEmail,
+      subject: 'Votre accès au portail Captivea',
+      html: `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;padding:0;background:#f1f5f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9;padding:48px 16px">
+  <tr><td align="center">
+    <table width="100%" cellpadding="0" cellspacing="0" style="max-width:460px;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.07)">
+      <tr><td style="background:linear-gradient(135deg,#4f46e5 0%,#6366f1 100%);padding:36px 40px 28px;text-align:center">
+        <div style="display:inline-block;background:rgba(255,255,255,.15);border-radius:12px;padding:10px 18px;margin-bottom:16px">
+          <span style="color:#ffffff;font-size:22px;font-weight:700;letter-spacing:-.5px">Captivea</span>
+        </div>
+        <p style="margin:0;color:rgba(255,255,255,.85);font-size:13px;letter-spacing:.5px;text-transform:uppercase">Portail interne</p>
+      </td></tr>
+      <tr><td style="padding:40px">
+        <p style="margin:0 0 8px;color:#1e293b;font-size:18px;font-weight:600">Bienvenue, ${escapeHtml(name)}</p>
+        <p style="margin:0 0 24px;color:#64748b;font-size:14px;line-height:1.7">Un accès au <strong>portail interne Captivea</strong> vient de vous être ouvert. Connectez-vous avec votre compte Microsoft professionnel (<strong>${escapeHtml(toEmail)}</strong>) : aucun mot de passe à créer.</p>
+        <div style="text-align:center;margin:28px 0">
+          <a href="${loginUrl}" style="display:inline-block;background:#4f46e5;color:#ffffff;text-decoration:none;font-size:15px;font-weight:600;padding:14px 32px;border-radius:10px;letter-spacing:-.2px">Se connecter avec Microsoft</a>
+        </div>
+        <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:8px;padding:14px 16px;margin:0 0 24px">
+          <p style="margin:0 0 6px;color:#94a3b8;font-size:11px;text-transform:uppercase;letter-spacing:.5px">Ou copiez ce lien</p>
+          <p style="margin:0;color:#4f46e5;font-size:12px;word-break:break-all">${loginUrl}</p>
+        </div>
+        <p style="margin:0;color:#94a3b8;font-size:12px;line-height:1.7;border-top:1px solid #f1f5f9;padding-top:20px">Si vous n'attendiez pas cette invitation, ignorez cet email.</p>
+      </td></tr>
+      <tr><td style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:16px 40px;text-align:center">
+        <p style="margin:0;color:#cbd5e1;font-size:11px">Captivea · Message automatique — ne pas répondre</p>
+      </td></tr>
+    </table>
+  </td></tr>
+</table>
+</body></html>`,
+    });
+    logAction(`[portail] Invitation envoyée à ${toEmail}`);
+    return 'sent';
+  } catch (e) {
+    logAction(`[portail] Échec de l'envoi de l'invitation à ${toEmail} : ${e.message}`);
+    return 'failed';
+  }
+}
 const graphLib = MOCK_GRAPH ? require('./lib/mock') : {
   ...require('./lib/group'),
   ...require('./lib/license'),
@@ -2043,8 +2096,12 @@ app.post('/api/admin/users', auth, requireRole('admin'), requireSuperAdmin, asyn
   saveDB();
 
   const user = dbRow(db, `SELECT id, name, email, role, status FROM users WHERE id=?`, [id]);
+  logAction(`[portail] Utilisateur ${user.email} créé (par ${req.user.email})`);
 
-  res.status(201).json({ user });
+  // Invitation par email avec le lien de connexion Microsoft (un échec n'annule pas la création)
+  const invitation = await sendPortalInvite(user.email, user.name);
+
+  res.status(201).json({ user, invitation });
 });
 
 app.put('/api/admin/users/:id', auth, requireRole('admin'), requireSuperAdmin, async (req, res) => {
