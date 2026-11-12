@@ -69,6 +69,7 @@ export default function MonitoringNotifications() {
   const [tab, setTab] = useState('all');
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState(null);
+  const [alertLog, setAlertLog] = useState([]);   // alertes envoyées aux CEOs (GET /alerts → log)
   const [confirm, setConfirm] = useState(null); // date de l'entrée à supprimer, ou 'all'
   const [deleting, setDeleting] = useState(false);
 
@@ -80,6 +81,9 @@ export default function MonitoringNotifications() {
       .then(d => { if (!cancelled) setData(d); })
       .catch(e => { if (!cancelled) { setData(null); setError(e.message); } })
       .finally(() => { if (!cancelled) setLoading(false); });
+    api.get('/api/monitoring/ai-usage/alerts')
+      .then(a => { if (!cancelled) setAlertLog(a.log || []); })
+      .catch(() => { if (!cancelled) setAlertLog([]); });
     return () => { cancelled = true; };
   }, [reloadKey]);
 
@@ -102,7 +106,11 @@ export default function MonitoringNotifications() {
   async function remove(target) {
     setDeleting(true); setSyncMsg(null);
     try {
-      await api.delete(target === 'all' ? '/api/monitoring/ai-usage/sync-history' : `/api/monitoring/ai-usage/sync-history/${encodeURIComponent(target)}`);
+      // « alert:… » = une alerte envoyée aux CEOs ; sinon une synchronisation SharePoint.
+      const isAlert = target.startsWith('alert:');
+      const id = isAlert ? target.slice(6) : target;
+      const base = isAlert ? '/api/monitoring/ai-usage/alerts/log' : '/api/monitoring/ai-usage/sync-history';
+      await api.delete(id === 'all' ? base : `${base}/${encodeURIComponent(id)}`);
       setConfirm(null);
       setReloadKey(k => k + 1);
     } catch (e) {
@@ -114,7 +122,7 @@ export default function MonitoringNotifications() {
 
   // Confirmation en ligne (pas de boîte native) : « Supprimer » puis « Confirmer / Annuler ».
   const DeleteControl = ({ target, label, confirmText }) => (confirm === target ? (
-    <span role="group" aria-label={confirmText} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text2)' }}>
+    <span role="group" aria-label={confirmText} style={{ display: 'inline-flex', flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text2)' }}>
       {confirmText}
       <button type="button" className="btn btn-danger" disabled={deleting} onClick={() => remove(target)} style={{ padding: '3px 12px', fontSize: 12 }}>
         {deleting ? <span className="spinner" style={{ width: 12, height: 12 }} /> : 'Confirmer'}
@@ -136,9 +144,11 @@ export default function MonitoringNotifications() {
   const label = tool => data?.tools?.[tool]?.label || tool;
   const color = tool => TOOLS.find(t => t.key === tool)?.color || 'var(--muted)';
 
+  const syncOn = sp?.configured && tab !== 'alerts';     // onglets « synchronisations »
   const TABS = [
-    { value: 'all', label: 'Toutes', count: history.length },
+    { value: 'all', label: 'Synchronisations', count: history.length },
     { value: 'errors', label: 'Avec erreurs', count: withErrors.length },
+    { value: 'alerts', label: 'Alertes envoyées', count: alertLog.length },
   ];
 
   return (
@@ -155,7 +165,7 @@ export default function MonitoringNotifications() {
             <h1 style={{ fontSize: 26, fontWeight: 800, letterSpacing: '-0.03em', margin: 0, background: 'linear-gradient(to bottom, #ffffff 35%, rgba(255,255,255,.4))', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>
               Notifications
             </h1>
-            <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>Historique des synchronisations SharePoint et de leurs erreurs (les 30 dernières). Une synchronisation automatique tourne toutes les 6 h.</p>
+            <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>Synchronisations SharePoint et leurs erreurs (les 30 dernières), et alertes envoyées aux CEOs. Une synchronisation automatique tourne toutes les 6 h.</p>
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {sp?.configured && (
@@ -179,15 +189,10 @@ export default function MonitoringNotifications() {
       {error && <div className="error-box" role="alert" style={{ marginBottom: 0 }}>{error}</div>}
       {loading && !data && <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--muted)', fontSize: 13 }}><span className="spinner" style={{ width: 14, height: 14 }} /> Chargement…</div>}
 
-      {data && !sp?.configured && (
-        <div className="card" style={{ fontSize: 13, color: 'var(--text2)', lineHeight: 1.6 }}>
-          La lecture SharePoint n'est pas configurée : renseigne <code>MONITORING_SP_DRIVE_ID</code> dans le <code>.env</code> du serveur pour suivre les synchronisations ici.
-        </div>
-      )}
-
-      {sp?.configured && (
+      {data && (
         <>
-          {/* ── Tuiles ── */}
+          {/* ── Tuiles (synchronisations) ── */}
+          {syncOn && (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 12 }}>
             <Kpi label="Dernière synchronisation" value={last ? ago(last.at) : '—'} sub={last ? `${fmtDate(last.at)} · ${triggerLabel(last.trigger)}` : 'Aucune synchronisation enregistrée'} />
             <Kpi label="Erreurs à la dernière" value={last ? lastErrs : '—'} color={last ? (lastErrs ? LEVELS.rouge.color : LEVELS.vert.color) : undefined}
@@ -195,6 +200,7 @@ export default function MonitoringNotifications() {
             <Kpi label="Sans erreur" value={history.length ? `${history.length - withErrors.length}/${history.length}` : '—'}
               sub={history.length ? 'synchronisations réussies' : ''} />
           </div>
+          )}
 
           {/* ── Onglets ── */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, borderBottom: '1px solid var(--border)' }}>
@@ -210,10 +216,57 @@ export default function MonitoringNotifications() {
               );
             })}
           </div>
-          {history.length > 0 && <DeleteControl target="all" label="Tout effacer" confirmText="Effacer tout l'historique ?" />}
+          {syncOn && history.length > 0 && <DeleteControl target="all" label="Tout effacer" confirmText="Effacer tout l'historique ?" />}
+          {tab === 'alerts' && alertLog.length > 0 && <DeleteControl target="alert:all" label="Tout effacer" confirmText="Effacer toutes les alertes ?" />}
           </div>
 
-          {shown.length === 0 && (
+          {tab !== 'alerts' && !sp?.configured && (
+            <div className="card" style={{ fontSize: 13, color: 'var(--text2)', lineHeight: 1.6 }}>
+              La lecture SharePoint n'est pas configurée : renseigne <code>MONITORING_SP_DRIVE_ID</code> dans le <code>.env</code> du serveur pour suivre les synchronisations ici.
+            </div>
+          )}
+
+          {tab === 'alerts' && (
+            alertLog.length === 0
+              ? (
+                <div className="card" style={{ textAlign: 'center', padding: 32, fontSize: 13, color: 'var(--muted)' }}>
+                  Aucune alerte envoyée pour le moment. Les envois (tests, manuels ou automatiques) faits depuis Administration &gt; Alertes apparaissent ici.
+                </div>
+              )
+              : (
+                <div style={{ overflowX: 'auto', border: '1px solid var(--border)', borderRadius: 10 }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                    <thead>
+                      <tr style={{ background: 'rgba(148,163,184,.06)' }}>
+                        {[['État', 'left'], ['Pays', 'left'], ['Licences', 'right'], ['Destinataires', 'left'], ['Date', 'left'], ['Envoyé par', 'left']].map(([h, a]) => (
+                          <th key={h} scope="col" style={{ padding: '10px 14px', textAlign: a, fontSize: 11, fontWeight: 700, letterSpacing: '.4px', textTransform: 'uppercase', color: 'var(--muted)', whiteSpace: 'nowrap' }}>{h}</th>
+                        ))}
+                        <th scope="col" style={{ padding: '10px 14px' }}><span style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>Actions</span></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {alertLog.map((l, i) => {
+                        const cell = { padding: '10px 14px', borderTop: '1px solid var(--border)', verticalAlign: 'middle' };
+                        const kind = !l.ok ? { level: 'rouge', icon: ALERT, text: 'Échec' } : l.test ? { level: 'jaune', icon: CHECK, text: 'Test' } : l.auto ? { level: 'vert', icon: CHECK, text: 'Automatique' } : { level: 'vert', icon: CHECK, text: 'Envoyée' };
+                        return (
+                          <tr key={l.at + i}>
+                            <td style={cell}><Chip level={kind.level} icon={kind.icon}>{kind.text}</Chip></td>
+                            <td style={{ ...cell, whiteSpace: 'nowrap', fontWeight: 700, color: 'var(--text)' }}>{l.country}</td>
+                            <td style={{ ...cell, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{l.count}</td>
+                            <td style={{ ...cell, color: 'var(--text2)' }}>{(l.to || []).join(', ')}</td>
+                            <td style={{ ...cell, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums', color: 'var(--text2)' }}>{fmtDate(l.at)}</td>
+                            <td style={{ ...cell, color: 'var(--muted)' }}>{l.by}</td>
+                            <td style={{ ...cell, textAlign: 'right', width: 150 }}><DeleteControl target={`alert:${l.at}`} label="Supprimer" confirmText="Supprimer cette alerte ?" /></td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )
+          )}
+
+          {syncOn && shown.length === 0 && (
             <div className="card" style={{ textAlign: 'center', padding: 32, fontSize: 13, color: 'var(--muted)' }}>
               {history.length === 0
                 ? "Aucune synchronisation enregistrée pour le moment. Lance « Synchroniser SharePoint » ou attends la prochaine synchronisation automatique."
@@ -222,6 +275,7 @@ export default function MonitoringNotifications() {
           )}
 
           {/* ── Journal ── */}
+          {syncOn && (
           <ol style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 12 }}>
             {shown.map((h, i) => {
               const bad = h.results.filter(r => !r.ok);
@@ -260,6 +314,7 @@ export default function MonitoringNotifications() {
               );
             })}
           </ol>
+          )}
         </>
       )}
     </div>

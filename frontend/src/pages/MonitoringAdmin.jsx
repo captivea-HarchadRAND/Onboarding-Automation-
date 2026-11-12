@@ -1,10 +1,12 @@
 // [EN-TÊTE] MonitoringAdmin.jsx — module Monitoring : Administration (/monitoring/admin), administrateurs avec le module.
 // Onglet « Source des documents » : chemins des 3 rapports Excel dans SharePoint (PUT /api/monitoring/ai-usage/sharepoint-settings ;
 // le drive se règle dans le .env : MONITORING_SP_DRIVE_ID) + « Enregistrer et synchroniser ». Onglet « Pays » : pays du filtre et autres écritures (PUT /api/monitoring/ai-usage/countries). Onglet « Prix » : prix mensuel par outil (Claude : un prix par siège, Premium et Standard)
-// (PUT /api/monitoring/ai-usage/prices).
+// (PUT /api/monitoring/ai-usage/prices). Onglet « Alertes » : adresse e-mail du CEO de chaque pays + niveau minimal, aperçu du nombre de
+// licences sans usage, envoi de test (à soi) ou au CEO (GET/PUT /api/monitoring/ai-usage/alerts, POST …/alerts/send).
 
 import { useEffect, useState } from 'react';
 import { api } from '../api';
+import Select from '../components/Select';
 import { MODULE_ICONS } from '../modules';
 import { TOOLS, LEVELS } from '../monitoringShared';
 
@@ -13,6 +15,7 @@ const PRICE_NOTE = "Sert à calculer le coût des licences inactives. Les licenc
 const SECTIONS = [
   { value: 'source', label: 'Source des documents', icon: ['M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z'] },
   { value: 'countries', label: 'Pays', icon: ['M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z', 'M2 12h20', 'M12 2a15 15 0 0 1 0 20', 'M12 2a15 15 0 0 0 0 20'] },
+  { value: 'alerts', label: 'Alertes', icon: ['M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9', 'M10.3 21a1.94 1.94 0 0 0 3.4 0'] },
   { value: 'prices', label: 'Prix', icon: ['M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z', 'M7 7h.01'] },
 ];
 
@@ -41,6 +44,12 @@ export default function MonitoringAdmin() {
   const [spBusy, setSpBusy] = useState(false);
   const [countryForm, setCountryForm] = useState([]);
   const [countryMsg, setCountryMsg] = useState(null);
+  const [alerts, setAlerts] = useState(null);                 // GET /alerts : réglages enregistrés, aperçu, journal
+  const [alertForm, setAlertForm] = useState({ minLevel: 'rouge', autoSend: false, attachPdf: false, languages: {}, recipients: {} });
+  const [alertMsg, setAlertMsg] = useState(null);
+  const [alertBusy, setAlertBusy] = useState(false);
+  const [confirmSend, setConfirmSend] = useState(null);       // pays (ou 'all') en attente de confirmation
+  const [alertReload, setAlertReload] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -58,6 +67,50 @@ export default function MonitoringAdmin() {
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [reloadKey]);
+
+  useEffect(() => {
+    if (section !== 'alerts') return undefined;
+    let cancelled = false;
+    api.get('/api/monitoring/ai-usage/alerts')
+      .then(a => {
+        if (cancelled) return;
+        setAlerts(a);
+        setAlertForm({ minLevel: a.settings.minLevel, autoSend: !!a.settings.autoSend, attachPdf: !!a.settings.attachPdf, languages: { ...(a.languages || {}) }, recipients: Object.fromEntries(a.countries.map(c => [c, (a.settings.recipients[c] || []).join(', ')])) });
+      })
+      .catch(e => { if (!cancelled) setAlertMsg({ ok: false, text: e.message }); });
+    return () => { cancelled = true; };
+  }, [section, alertReload]);
+
+  const splitEmails = v => String(v || '').split(/[,;\s]+/).map(x => x.trim().toLowerCase()).filter(Boolean);
+  const alertBody = () => ({ minLevel: alertForm.minLevel, autoSend: alertForm.autoSend, attachPdf: alertForm.attachPdf, languages: alertForm.languages, recipients: Object.fromEntries(Object.entries(alertForm.recipients).map(([c, v]) => [c, splitEmails(v)])) });
+  // Les envois utilisent les réglages ENREGISTRÉS : on bloque donc l'envoi tant que le formulaire a des modifications.
+  const alertsDirty = () => !alerts || alertForm.minLevel !== alerts.settings.minLevel || alertForm.autoSend !== !!alerts.settings.autoSend || alertForm.attachPdf !== !!alerts.settings.attachPdf
+    || alerts.countries.some(c => (alertForm.languages[c] || 'fr') !== ((alerts.languages || {})[c] || 'fr'))
+    || alerts.countries.some(c => splitEmails(alertForm.recipients[c]).join(',') !== (alerts.settings.recipients[c] || []).join(','));
+
+  async function saveAlerts() {
+    setAlertBusy(true); setAlertMsg(null);
+    try {
+      await api.put('/api/monitoring/ai-usage/alerts', alertBody());
+      setAlertMsg({ ok: true, text: 'Réglages des alertes enregistrés.' });
+      setAlertReload(k => k + 1);
+    } catch (e) {
+      setAlertMsg({ ok: false, text: e.message });
+    } finally { setAlertBusy(false); }
+  }
+
+  async function sendAlert(country, test) {
+    setAlertBusy(true); setAlertMsg(null); setConfirmSend(null);
+    try {
+      const out = await api.post('/api/monitoring/ai-usage/alerts/send', { country, test });
+      const label = { sent: 'envoyée', nothing: 'aucune licence concernée', no_recipient: "pas d'adresse enregistrée", failed: 'échec' };
+      const lines = out.results.map(r => `${r.country.replace(/^Captivea\s+/i, '')} : ${label[r.status] || r.status}${r.status === 'sent' ? ` (${r.count} licence${r.count > 1 ? 's' : ''})` : ''}`);
+      setAlertMsg({ ok: out.ok, text: (test ? 'Test — ' : 'Alerte — ') + lines.join(' · ') });
+      setAlertReload(k => k + 1);
+    } catch (e) {
+      setAlertMsg({ ok: false, text: e.message });
+    } finally { setAlertBusy(false); }
+  }
 
   async function saveSharePoint(thenSync) {
     setSpBusy(true); setSpMsg(null);
@@ -209,6 +262,162 @@ export default function MonitoringAdmin() {
     );
   }
 
+  /* ── Alertes aux CEOs ── */
+  function renderAlerts() {
+    if (!alerts) {
+      return alertMsg
+        ? <div className="error-box" role="alert">{alertMsg.text}</div>
+        : <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}><span className="spinner" style={{ width: 22, height: 22 }} /></div>;
+    }
+    const dirty = alertsDirty();
+    const countOf = c => alerts.counts?.[c]?.[alertForm.minLevel] ?? 0;
+    const withMail = alerts.countries.filter(c => (alerts.settings.recipients[c] || []).length);
+    const canSend = alerts.smtpConfigured && !dirty && !alertBusy;
+    const mois = Object.entries(alerts.months || {}).map(([t, m]) => `${data.tools[t]?.label || t} ${m}`).join(' · ');
+    const small = { padding: '4px 12px', fontSize: 12, minHeight: 32 };
+    const moisLong = m => { const [y, mm] = String(m).split('-'); return new Date(Number(y), Number(mm) - 1, 1).toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' }); };
+    const confirmRow = (text, onYes) => (
+      <span role="group" aria-label={text} title={text} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap' }}>
+        <button type="button" className="btn btn-danger" style={small} disabled={alertBusy} onClick={onYes} autoFocus>Confirmer</button>
+        <button type="button" className="btn btn-ghost" style={small} onClick={() => setConfirmSend(null)}>Annuler</button>
+      </span>
+    );
+    const smtpColors = alerts.smtpConfigured ? LEVELS.vert : LEVELS.orange;
+    return (
+      <div style={{ display: 'grid', gap: 16, maxWidth: 820 }}>
+        <div className="card" style={{ padding: 18 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+            <h2 style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', margin: 0 }}>Alerter les CEOs</h2>
+            <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 10px', borderRadius: 999, color: smtpColors.color, background: smtpColors.bg, border: `1px solid ${smtpColors.border}` }}>
+              {alerts.smtpConfigured ? "envoi d'e-mails configuré" : "envoi d'e-mails non configuré (SMTP)"}
+            </span>
+          </div>
+          <p style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.6, margin: '6px 0 16px' }}>
+            Indique l'adresse du CEO de chaque pays. Il reçoit la liste des personnes de son pays qui ont une licence IA (Claude, ChatGPT, Fireflies) mais ne s'en servent pas. Tu peux envoyer à la main ci-dessous, ou activer l'envoi automatique.
+            {mois && <> Relevé pris en compte : {mois}.</>}
+          </p>
+          <div style={{ maxWidth: 520 }}>
+            <label htmlFor="al-level">Quelles licences signaler ?</label>
+            <Select id="al-level" value={alertForm.minLevel} onChange={e => setAlertForm(f => ({ ...f, minLevel: e.target.value }))}>
+              <option value="rouge">Inactives depuis 2 mois ou plus (rouge)</option>
+              <option value="orange">Dès qu'une licence n'a pas servi ce mois-ci (orange et rouge)</option>
+              <option value="jaune">Aussi celles qui servent peu (jaune, orange et rouge)</option>
+            </Select>
+            {alertForm.minLevel === 'jaune' && (
+              <p className="field-hint" style={{ marginTop: 6 }}>
+                « Utilise peu » = plus de 0 mais sous le seuil de l'outil : {Object.values(data.tools).map(t => `${t.label} moins de ${t.lowBelow} ${t.unit}`).join(' · ')}.
+              </p>
+            )}
+          </div>
+          <div style={{ marginTop: 18, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
+            <label htmlFor="al-auto" style={{ display: 'flex', alignItems: 'flex-start', gap: 10, margin: 0, cursor: 'pointer' }}>
+              <input id="al-auto" type="checkbox" checked={alertForm.autoSend} onChange={e => setAlertForm(f => ({ ...f, autoSend: e.target.checked }))} style={{ width: 18, height: 18, marginTop: 1, flexShrink: 0 }} />
+              <span>
+                <span style={{ display: 'block', fontWeight: 600, color: 'var(--text)' }}>Envoyer l'alerte automatiquement</span>
+                <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)', lineHeight: 1.6, marginTop: 2 }}>
+                  Une seule alerte par mois et par pays, dès que les données du mois sont prêtes (tous les outils ont le nouveau mois, ou 24 h après le premier si l'un est en retard). Après chaque synchronisation et toutes les 6 h, l'application vérifie seulement si une alerte est due : une alerte déjà envoyée pour ce mois ne repart jamais.
+                </span>
+              </span>
+            </label>
+            {alerts.auto?.month && (
+              <p style={{ fontSize: 12, color: 'var(--muted)', margin: '10px 0 0 28px', lineHeight: 1.6 }}>
+                Mois suivi : <b style={{ color: 'var(--text)' }}>{alerts.auto.month}</b> · {alerts.auto.ready ? 'données prêtes' : 'en attente'} ({alerts.auto.reason.toLowerCase()}).
+              </p>
+            )}
+          </div>
+          <div style={{ marginTop: 18, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
+            <label htmlFor="al-pdf" style={{ display: 'flex', alignItems: 'flex-start', gap: 10, margin: 0, cursor: 'pointer' }}>
+              <input id="al-pdf" type="checkbox" checked={alertForm.attachPdf} onChange={e => setAlertForm(f => ({ ...f, attachPdf: e.target.checked }))} style={{ width: 18, height: 18, marginTop: 1, flexShrink: 0 }} />
+              <span>
+                <span style={{ display: 'block', fontWeight: 600, color: 'var(--text)' }}>Joindre le détail en PDF</span>
+                <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)', lineHeight: 1.6, marginTop: 2 }}>
+                  L'e-mail contient en pièce jointe un PDF aux couleurs Captivea avec la liste des licences du pays, que le CEO peut télécharger ou transférer. S'applique aux envois manuels, aux tests et à l'envoi automatique.
+                </span>
+              </span>
+            </label>
+          </div>
+        </div>
+
+        <div className="card" style={{ padding: 18 }}>
+          <h2 style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', margin: 0 }}>Adresse du CEO par pays</h2>
+          <p style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.6, margin: '6px 0 16px' }}>
+            Plusieurs adresses possibles (séparées par une virgule, 5 au maximum). Laisse vide pour ne pas alerter un pays.
+          </p>
+          <div style={{ overflowX: 'auto', border: '1px solid var(--border)', borderRadius: 10 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead>
+                <tr style={{ background: 'rgba(148,163,184,.06)' }}>
+                  {[['Pays', 'left'], ['E-mail du CEO', 'left'], ['Langue', 'left'], ['Licences', 'right'], ['Dernière alerte', 'left'], ['Envoi', 'right']].map(([h, a]) => (
+                    <th key={h} scope="col" style={{ padding: '10px 14px', textAlign: a, fontSize: 11, fontWeight: 700, letterSpacing: '.4px', textTransform: 'uppercase', color: 'var(--muted)', whiteSpace: 'nowrap' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {alerts.countries.map(c => {
+                  const n = countOf(c);
+                  const saved = (alerts.settings.recipients[c] || []).length > 0;
+                  const lastSent = alerts.auto?.sent?.[c];
+                  const cell = { padding: '10px 14px', borderTop: '1px solid var(--border)', verticalAlign: 'middle' };
+                  return (
+                    <tr key={c}>
+                      <td style={{ ...cell, whiteSpace: 'nowrap' }}>
+                        {/^Captivea\s+/i.test(c) && <span style={{ color: 'var(--muted)' }}>Captivea </span>}<b style={{ color: 'var(--text)' }}>{c.replace(/^Captivea\s+/i, '')}</b>
+                      </td>
+                      <td style={{ ...cell, minWidth: 240 }}>
+                        <input type="text" inputMode="email" autoComplete="off" spellCheck={false} aria-label={`E-mail du CEO — ${c}`} placeholder="prenom.nom@captivea.com"
+                          style={{ margin: 0, padding: '7px 10px', fontSize: 13, width: '100%', minWidth: 230 }}
+                          value={alertForm.recipients[c] || ''} onChange={e => setAlertForm(f => ({ ...f, recipients: { ...f.recipients, [c]: e.target.value } }))} />
+                      </td>
+                      <td style={cell}>
+                        <Select aria-label={`Langue de l'e-mail et du PDF — ${c}`} value={alertForm.languages[c] || 'fr'} style={{ width: 'auto', minWidth: 84 }}
+                          onChange={e => setAlertForm(f => ({ ...f, languages: { ...f.languages, [c]: e.target.value } }))}>
+                          <option value="fr">Français</option>
+                          <option value="en">English</option>
+                        </Select>
+                      </td>
+                      <td style={{ ...cell, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                        {n > 0
+                          ? <span title={`${n} licence${n > 1 ? 's' : ''} sans usage au dernier mois relevé`} style={{ display: 'inline-block', minWidth: 28, textAlign: 'center', fontSize: 12, fontWeight: 800, padding: '2px 9px', borderRadius: 999, color: LEVELS.orange.color, background: LEVELS.orange.bg, border: `1px solid ${LEVELS.orange.border}` }}>{n}</span>
+                          : <span style={{ color: 'var(--muted)' }} aria-label="aucune licence concernée">0</span>}
+                      </td>
+                      <td style={{ ...cell, whiteSpace: 'nowrap', color: lastSent ? 'var(--text2)' : 'var(--muted)', fontSize: 12 }}>
+                        {lastSent ? moisLong(lastSent) : '—'}
+                      </td>
+                      <td style={{ ...cell, textAlign: 'right' }}>
+                        {confirmSend === c
+                          ? confirmRow(`Envoyer à ${(alerts.settings.recipients[c] || []).join(', ')} ?`, () => sendAlert(c, false))
+                          : saved && n > 0
+                            ? (
+                              <span style={{ display: 'inline-flex', gap: 8 }}>
+                                <button type="button" className="btn btn-ghost" style={small} disabled={!canSend} onClick={() => sendAlert(c, true)}>Test</button>
+                                <button type="button" className="btn btn-primary" style={small} disabled={!canSend} onClick={() => setConfirmSend(c)}>Envoyer</button>
+                              </span>
+                            )
+                            : <span style={{ fontSize: 12, color: 'var(--muted)' }}>{!saved ? 'pas d’adresse' : 'rien à signaler'}</span>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
+            <button type="button" className="btn btn-primary" disabled={alertBusy || !dirty} onClick={saveAlerts}>
+              {alertBusy && <span className="spinner" style={{ width: 13, height: 13 }} />} Enregistrer
+            </button>
+            {confirmSend === 'all'
+              ? confirmRow(`Envoyer aux ${withMail.length} pays qui ont une adresse ?`, () => sendAlert('all', false))
+              : <button type="button" className="btn btn-ghost" disabled={!canSend || withMail.length === 0} onClick={() => setConfirmSend('all')}>Envoyer à tous les CEOs</button>}
+            {dirty && <span style={{ fontSize: 12, color: 'var(--muted)' }}>Enregistre d'abord les modifications pour pouvoir envoyer.</span>}
+          </div>
+          {alertMsg && <p role={alertMsg.ok ? 'status' : 'alert'} style={{ fontSize: 12, fontWeight: 600, margin: '12px 0 0', color: alertMsg.ok ? LEVELS.vert.color : LEVELS.rouge.color }}>{alertMsg.text}</p>}
+        </div>
+
+      </div>
+    );
+  }
+
   /* ── Prix ── */
   function renderPrices() {
     return (
@@ -277,7 +486,7 @@ export default function MonitoringAdmin() {
             })}
           </div>
           <div role="tabpanel" id={`panel-${section}`} aria-labelledby={`tab-${section}`}>
-            {section === 'source' ? renderSettings() : section === 'countries' ? renderCountries() : renderPrices()}
+            {section === 'source' ? renderSettings() : section === 'countries' ? renderCountries() : section === 'alerts' ? renderAlerts() : renderPrices()}
           </div>
         </>
       )}

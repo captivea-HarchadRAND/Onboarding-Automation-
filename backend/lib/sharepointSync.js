@@ -103,9 +103,23 @@ function reportTargets(tool, societes) {
     .filter(t => !t.path.split('/').some(seg => seg === '..' || seg === '.' || seg === ''));
 }
 
+// Jeton Microsoft : MSAL n'a pas de nouvel essai propre et échoue sur une coupure de connexion
+// (« network_error », cf. les coupures ponctuelles du réseau) : jusqu'à 3 essais, avec une courte pause.
+const NETWORK_ERROR = /network_error|ETIMEDOUT|ECONNRESET|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT|timed? ?out|fetch failed/i;
+async function graphToken() {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return (await getCredential().getToken('https://graph.microsoft.com/.default')).token;
+    } catch (e) {
+      if (attempt >= 3 || !NETWORK_ERROR.test(`${e.code || ''} ${e.message || ''}`)) throw e;
+      await new Promise(r => setTimeout(r, attempt * 700));
+    }
+  }
+}
+
 // null = rapport absent (404), seulement si allowMissing (société sans rapport pour cet outil).
 async function download(filePath, { allowMissing = false } = {}) {
-  const { token } = await getCredential().getToken('https://graph.microsoft.com/.default');
+  const token = await graphToken();
   const drive = encodeURIComponent(driveId());
   const path = filePath.split('/').map(encodeURIComponent).join('/');
   const res = await retryFetch(`https://graph.microsoft.com/v1.0/drives/${drive}/root:/${path}:/content`, {
@@ -184,20 +198,29 @@ async function syncAll(db, { isMock = false, trigger = '' } = {}) {
       try {
         const targets = reportTargets(tool, societes);
         const perSociete = targets.some(t => t.societe);
-        const all = [], skipped = [], read = [];
+        const all = [], skipped = [], read = [], failed = [];
         for (const t of targets) {
-          const buf = await download(t.path, { allowMissing: perSociete });
-          if (!buf) continue;
-          const out = monthlyPayloads(tool, readWorkbook(buf));
-          all.push(...out.parsed);
-          skipped.push(...out.skipped.map(x => (t.societe ? `${t.societe} — ${x}` : x)));
-          if (t.societe) read.push(t.societe);
+          try {
+            const buf = await download(t.path, { allowMissing: perSociete });
+            if (!buf) continue;
+            const out = monthlyPayloads(tool, readWorkbook(buf));
+            all.push(...out.parsed);
+            skipped.push(...out.skipped.map(x => (t.societe ? `${t.societe} — ${x}` : x)));
+            if (t.societe) read.push(t.societe);
+          } catch (e) {
+            if (!perSociete) throw e;
+            // Une société illisible (réseau, accès…) n'empêche pas de lire les autres, mais la synchro n'est pas « réussie ».
+            failed.push(`${t.societe} : ${String(e.message || e).replace(/\s*See https?:\/\/\S+ for details\.?/i, '').slice(0, 80)}`);
+          }
         }
-        if (perSociete && !read.length) throw new Error('Aucun rapport trouvé dans SharePoint pour les pays de la liste (chemin à vérifier)');
+        if (perSociete && !read.length && !failed.length) throw new Error('Aucun rapport trouvé dans SharePoint pour les pays de la liste (chemin à vérifier)');
         const parsed = mergeByMonth(all);
-        if (!parsed.length) throw new Error(skipped[0] || 'Aucun onglet mensuel trouvé dans le rapport');
+        if (!parsed.length) throw new Error(failed.length ? `Aucune société lue (${failed.join(' ; ')})`.slice(0, 300) : (skipped[0] || 'Aucun onglet mensuel trouvé dans le rapport'));
         for (const p of parsed) aiUsage.ingest(db, p, { isMock });
-        results.push({ tool, ok: true, months: parsed.map(p => p.month).sort(), skipped, ...(perSociete ? { societes: read } : {}) });
+        const months = parsed.map(p => p.month).sort();
+        results.push(failed.length
+          ? { tool, ok: false, months, societes: read, skipped, error: `Lecture incomplète : ${failed.join(' ; ')} — les autres sociétés ont été enregistrées`.slice(0, 400) }
+          : { tool, ok: true, months, skipped, ...(perSociete ? { societes: read } : {}) });
       } catch (e) {
         // Message de Graph / xlsx : jamais de jeton ni de secret dedans.
         results.push({ tool, ok: false, error: String(e.message || e).slice(0, 200) });

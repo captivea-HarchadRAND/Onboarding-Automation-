@@ -1884,6 +1884,7 @@ app.put('/api/admin/settings', auth, requireRole('admin'), requireModule('onboar
 
 const aiUsage = require('./lib/aiUsage');
 const spSync = require('./lib/sharepointSync');
+const monitoringAlerts = require('./lib/monitoringAlerts');
 
 function monitoringIngestConfigured() {
   const t = process.env.MONITORING_INGEST_TOKEN;
@@ -1912,6 +1913,7 @@ app.post('/api/monitoring/ai-usage/ingest', async (req, res) => {
   const db = await getDB();
   aiUsage.ingest(db, parsed, { isMock: MOCK_GRAPH });
   saveDB();
+  runAutoAlerts('n8n').catch(err => console.error('[monitoring-alerts]', err.message));
   logAction(`[monitoring] ${parsed.tool} ${parsed.month} : ${parsed.rows.length} ligne(s) reçue(s)`);
   res.json({ ok: true, tool: parsed.tool, month: parsed.month, rows: parsed.rows.length });
 });
@@ -1938,6 +1940,7 @@ async function syncMonitoringFromSharePoint(trigger) {
   for (const r of out.results) {
     logAction(r.ok ? `[monitoring] SharePoint (${trigger}) ${r.tool} : ${r.months.length} mois synchronisé(s)` : `[monitoring] SharePoint (${trigger}) ${r.tool} : échec — ${r.error}`);
   }
+  runAutoAlerts('synchro').catch(err => console.error('[monitoring-alerts]', err.message));
   return out;
 }
 
@@ -1983,6 +1986,130 @@ app.delete('/api/monitoring/ai-usage/sync-history/:at', auth, requireRole('admin
   if (!n) return res.status(404).json({ error: 'Entrée introuvable (déjà supprimée ?)' });
   await saveSyncHistory();
   logAction(`[monitoring] Entrée de l'historique des synchronisations supprimée par ${req.user.email}`);
+  res.json({ ok: true, removed: n });
+});
+
+// ── Alertes aux CEOs : licences IA payées mais sans usage, par pays ─────────────────────────────────────
+// Administration > Alertes : adresse(s) e-mail du CEO de chaque pays, niveau minimal, aperçu et envoi.
+app.get('/api/monitoring/ai-usage/alerts', auth, requireRole('admin'), requireModule('monitoring'), async (req, res) => {
+  const db = await getDB();
+  const { settings, saved } = monitoringAlerts.readSettings(db);
+  const dig = monitoringAlerts.digest(db, { isMock: MOCK_GRAPH });
+  const countries = aiUsage.readCountries(db).countries.map(c => c.name);
+  const extra = Object.keys(dig.byCountry).filter(c => !countries.includes(c)).sort(); // pays des rapports absents de la liste
+  const p = monitoringAlerts.plan(db, { isMock: MOCK_GRAPH });
+  res.json({
+    settings, saved, countries: [...countries, ...extra], counts: monitoringAlerts.counts(dig.byCountry), months: dig.months,
+    log: monitoringAlerts.readLog(db), smtpConfigured: !!get2FASender(),
+    languages: Object.fromEntries([...countries, ...extra].map(c => [c, monitoringAlerts.langFor(settings, c)])),   // langue effective de chaque pays
+    auto: { month: p.month, ready: p.ready, reason: p.reason, sent: p.state.sent },   // où en est l'envoi automatique
+  });
+});
+
+// ── Envoi automatique : une seule alerte par mois et par pays, dès que les données du mois sont prêtes ──
+// Appelé après chaque synchro SharePoint, chaque envoi de n8n et toutes les 6 h. Sans effet si « envoi automatique »
+// est désactivé, si le SMTP n'est pas configuré ou si le mois n'est pas encore prêt (voir monitoringAlerts.plan).
+let alertAutoRunning = false;
+async function runAutoAlerts(trigger) {
+  if (alertAutoRunning || !get2FASender()) return;
+  alertAutoRunning = true;
+  try {
+    const db = await getDB();
+    const { settings } = monitoringAlerts.readSettings(db);
+    if (!settings.autoSend) return;
+    const p = monitoringAlerts.plan(db, { isMock: MOCK_GRAPH });
+    monitoringAlerts.writeState(db, p.state);                 // mémorise la 1re apparition du mois
+    if (!p.ready) { saveDB(); return; }
+    const log = [];
+    for (const [country, to] of Object.entries(settings.recipients)) {
+      if (p.state.sent[country] && p.state.sent[country] >= p.month) continue;   // ce mois ou un mois plus récent déjà alerté : rien (jamais deux fois, jamais un mois précédent)
+      const items = monitoringAlerts.keepLevel(p.byCountry[country] || [], settings.minLevel);
+      if (items.length) {
+        const entry = await deliverAlert({ country, items, to, test: false, by: 'automatique', attachPdf: settings.attachPdf, lang: monitoringAlerts.langFor(settings, country) });
+        log.push(entry);
+        if (!entry.ok) continue;                               // échec SMTP : non noté, retenté au prochain contrôle
+      }
+      p.state.sent[country] = p.month;                         // envoyé, ou rien à signaler ce mois-ci
+    }
+    monitoringAlerts.writeState(db, p.state);
+    if (log.length) monitoringAlerts.appendLog(db, log.reverse());
+    saveDB();
+    if (log.length) logAction(`[monitoring] Alertes automatiques (${trigger}) pour ${p.month} : ${log.filter(l => l.ok).length}/${log.length} envoyée(s)`);
+  } finally {
+    alertAutoRunning = false;
+  }
+}
+
+// Envoie l'e-mail d'un pays. Ne lève jamais : renvoie l'entrée de journal (ok ou échec).
+async function deliverAlert({ country, items, to, test, by, attachPdf = false, lang = 'fr' }) {
+  const mail = monitoringAlerts.buildEmail({ country, items, test, withPdf: attachPdf, lang });
+  const entry = { at: new Date().toISOString(), by, country, to, count: items.length, test, ...(by === 'automatique' ? { auto: true } : {}) };
+  try {
+    await getSmtpTransport().sendMail({
+      from: get2FASender(), to, subject: mail.subject, html: mail.html, text: mail.text,
+      ...(mail.pdf ? { attachments: [{ filename: mail.pdfName, content: mail.pdf, contentType: 'application/pdf' }] } : {}),   // détail en PDF si l'option est activée
+    });
+    logAction(`[monitoring] Alerte ${test ? 'de test ' : ''}« ${country} » envoyée (${by}) : ${items.length} licence(s), ${to.length} destinataire(s)`);
+    return { ...entry, ok: true };
+  } catch (e) {
+    logAction(`[monitoring] Échec de l'alerte « ${country} » : ${e.message}`);
+    return { ...entry, ok: false, error: 'Envoi impossible (SMTP)' };
+  }
+}
+
+app.put('/api/monitoring/ai-usage/alerts', auth, requireRole('admin'), requireModule('monitoring'), async (req, res) => {
+  const db = await getDB();
+  let settings;
+  try {
+    settings = monitoringAlerts.saveSettings(db, req.body);
+  } catch (e) {
+    return res.status(e.httpStatus || 400).json({ error: e.message });
+  }
+  saveDB();
+  logAction(`[monitoring] Alertes CEO : réglages modifiés par ${req.user.email} (${Object.keys(settings.recipients).length} pays avec adresse, niveau « ${settings.minLevel} »)`);
+  res.json({ ok: true, settings });
+});
+
+// Envoi : { country: "<pays>" | "all", test?: true }. test = un seul e-mail, à l'administrateur connecté (jamais au CEO).
+const monitoringAlertLimiter = makeLimiter(10, { keyGenerator: (req) => req.user.id });
+app.post('/api/monitoring/ai-usage/alerts/send', auth, requireRole('admin'), requireModule('monitoring'), monitoringAlertLimiter, async (req, res) => {
+  if (!get2FASender()) return res.status(503).json({ error: "L'envoi d'e-mails n'est pas configuré sur le serveur (SMTP_USER / SMTP_PASS)." });
+  const db = await getDB();
+  const { settings } = monitoringAlerts.readSettings(db);
+  const dig = monitoringAlerts.digest(db, { isMock: MOCK_GRAPH });
+  const test = req.body?.test === true;
+  const wanted = String(req.body?.country ?? '');
+  const known = [...new Set([...aiUsage.readCountries(db).countries.map(c => c.name), ...Object.keys(dig.byCountry)])];
+  const targets = wanted === 'all' ? known : known.filter(c => c === wanted);
+  if (!targets.length) return res.status(400).json({ error: 'Pays inconnu' });
+  const results = [], log = [];
+  for (const country of targets) {
+    const items = monitoringAlerts.keepLevel(dig.byCountry[country] || [], settings.minLevel);
+    const to = test ? [req.user.email] : (settings.recipients[country] || []);
+    if (!to.length) { results.push({ country, status: 'no_recipient' }); continue; }
+    if (!items.length) { results.push({ country, status: 'nothing' }); continue; }
+    const entry = await deliverAlert({ country, items, to, test, by: req.user.email, attachPdf: settings.attachPdf, lang: monitoringAlerts.langFor(settings, country) });
+    results.push(entry.ok ? { country, status: 'sent', to, count: items.length } : { country, status: 'failed', error: entry.error });
+    log.push(entry);
+  }
+  if (log.length) { monitoringAlerts.appendLog(db, log.reverse()); saveDB(); }
+  res.json({ ok: results.every(r => r.status !== 'failed'), results });
+});
+
+// Journal des alertes envoyées (page Notifications > Alertes envoyées) : supprimer une entrée (par sa date) ou tout effacer.
+app.delete('/api/monitoring/ai-usage/alerts/log', auth, requireRole('admin'), requireModule('monitoring'), async (req, res) => {
+  const db = await getDB();
+  const n = monitoringAlerts.removeLog(db);
+  saveDB();
+  logAction(`[monitoring] Journal des alertes effacé par ${req.user.email} (${n} entrée(s))`);
+  res.json({ ok: true, removed: n });
+});
+app.delete('/api/monitoring/ai-usage/alerts/log/:at', auth, requireRole('admin'), requireModule('monitoring'), async (req, res) => {
+  const db = await getDB();
+  const n = monitoringAlerts.removeLog(db, String(req.params.at));
+  if (!n) return res.status(404).json({ error: 'Entrée introuvable (déjà supprimée ?)' });
+  saveDB();
+  logAction(`[monitoring] Entrée du journal des alertes supprimée par ${req.user.email}`);
   res.json({ ok: true, removed: n });
 });
 
@@ -2945,6 +3072,10 @@ getDB().then(async () => {
     // Se déclenche seulement si l'emplacement est configuré (.env ou Paramètres), sans redémarrage nécessaire.
     const auto = () => (spSync.isConfigured() ? syncMonitoringFromSharePoint('auto').catch(err => console.error('[monitoring-sync]', err.message)) : null);
     setTimeout(auto, 30 * 1000);
+    // Alertes CEO automatiques : contrôle aussi sans synchro SharePoint (données envoyées par n8n) et pour la règle des 24 h.
+    const autoAlerts = () => runAutoAlerts('contrôle').catch(err => console.error('[monitoring-alerts]', err.message));
+    setTimeout(autoAlerts, 90 * 1000);
+    setInterval(autoAlerts, 6 * 60 * 60 * 1000);
     setInterval(auto, 6 * 60 * 60 * 1000);
   }
   app.listen(PORT, () => {
