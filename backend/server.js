@@ -476,6 +476,20 @@ function makeLimiter(max, extra = {}) {
 const authLimiter          = makeLimiter(10); // login (pré-auth, par IP — inchangé)
 const twoFaLimiter         = makeLimiter(10); // vérification 2FA (pré-auth, par IP)
 const launchPasswordLimiter = makeLimiter(10, { keyGenerator: (req) => req.user.id }); // par utilisateur
+// Création d'un onboarding : seuls les refus du code de confirmation comptent (res.locals.launchCodeRejected),
+// pas les créations réussies ni les autres erreurs — sinon un opérateur serait bloqué après 10 onboardings en 15 minutes.
+const launchCodeFailLimiter = makeLimiter(10, {
+  keyGenerator: (req) => req.user.id,
+  skipSuccessfulRequests: true,
+  requestWasSuccessful: (req, res) => !res.locals.launchCodeRejected,
+});
+
+// Code de confirmation IT (LAUNCH_PASSWORD, .env uniquement). Comparaison sur empreintes SHA-256 de taille fixe :
+// ni la longueur ni le contenu ne fuient via le timing.
+function launchPasswordMatches(password) {
+  const digest = (s) => createHash('sha256').update(String(s)).digest();
+  return timingSafeEqual(digest(password), digest(process.env.LAUNCH_PASSWORD));
+}
 
 app.post('/api/auth/login', authLimiter, async (req, res) => {
   const { email, password } = req.body;
@@ -669,18 +683,18 @@ app.post('/api/auth/logout', async (req, res) => {
 });
 
 app.get('/api/auth/me', auth, async (req, res) => {
-  res.json({ user: req.user, mock: MOCK_GRAPH, isSuperAdmin: isSuperAdmin(req.user) });
+  // launchPasswordSet : l'interface demande le code de confirmation à tout le monde (opérateurs compris)
+  res.json({ user: req.user, mock: MOCK_GRAPH, isSuperAdmin: isSuperAdmin(req.user), launchPasswordSet: !!process.env.LAUNCH_PASSWORD });
 });
 
-// Vérification du mot de passe de lancement IT (uniquement via .env — non modifiable via UI)
+// Vérification du mot de passe de lancement IT (uniquement via .env — non modifiable via UI).
+// Sert seulement à prévenir l'utilisateur avant le compte à rebours : le contrôle qui compte est refait
+// par POST /api/onboardings, qui exige le même code.
 app.post('/api/auth/verify-launch-password', auth, launchPasswordLimiter, async (req, res) => {
   const { password } = req.body;
   if (!password) return res.status(400).json({ error: 'Mot de passe requis' });
-  const launchPassword = process.env.LAUNCH_PASSWORD;
-  if (!launchPassword) return res.status(500).json({ error: 'Code de confirmation IT non configuré' });
-  // Comparaison sur empreintes SHA-256 de taille fixe : ni la longueur ni le contenu ne fuient via le timing
-  const digest = (s) => createHash('sha256').update(String(s)).digest();
-  if (!timingSafeEqual(digest(password), digest(launchPassword)))
+  if (!process.env.LAUNCH_PASSWORD) return res.status(500).json({ error: 'Code de confirmation IT non configuré' });
+  if (!launchPasswordMatches(password))
     return res.status(401).json({ error: 'Code de confirmation incorrect' });
   res.json({ ok: true });
 });
@@ -1628,8 +1642,19 @@ app.delete('/api/onboardings/:id', auth, requireSuperAdmin, async (req, res) => 
   res.json({ ok: true });
 });
 
-app.post('/api/onboardings', auth, requireModule('onboarding'), async (req, res) => {
+app.post('/api/onboardings', auth, requireModule('onboarding'), launchCodeFailLimiter, async (req, res) => {
   const { firstName, lastName, email, jobRole, location, city, groupId, groupName, skuId, licenseName } = req.body;
+  // Code de confirmation IT : vérifié ICI, pas seulement dans l'interface — sinon un appel direct de cette route
+  // créerait un compte sans le code. Sans LAUNCH_PASSWORD dans le .env, aucun code n'est demandé.
+  if (process.env.LAUNCH_PASSWORD) {
+    const code = req.body.launchPassword;
+    if (typeof code !== 'string' || !code || !launchPasswordMatches(code)) {
+      logAction(`[AUTH] Code de confirmation IT refusé à la création d'un onboarding — ${req.user.email}`);
+      res.locals.launchCodeRejected = true;
+      // 403 et non 401 : côté interface, un 401 hors /auth/ renvoie vers la page de connexion (api.js)
+      return res.status(403).json({ error: 'Code de confirmation incorrect' });
+    }
+  }
   if (!firstName?.trim() || !lastName?.trim())
     return res.status(400).json({ error: 'Prénom et nom requis' });
   // Limites de longueur (anti-DoS mémoire sql.js + cohérence Graph)

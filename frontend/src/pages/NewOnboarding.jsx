@@ -4,6 +4,8 @@
 //   · 4 Exécution (sondage du statut) · 5 Résultat (email + mot de passe temporaire, affiché une seule fois).
 //   Appelle : /api/graph/licenses, /api/graph/groups,
 //   /api/auth/verify-launch-password, POST /api/onboardings, GET /api/onboardings/:id.
+//   Le code de confirmation est demandé à tous (opérateurs compris, via /api/auth/me → launchPasswordSet) et renvoyé
+//   avec POST /api/onboardings : c'est le serveur qui le vérifie à la création.
 //   NB : lit /api/admin/settings (réservé aux admins) pour les domaines ; un opérateur retombe sur les valeurs par défaut.
 
 import { useState, useEffect, useRef } from 'react';
@@ -438,6 +440,8 @@ export default function NewOnboarding() {
   const [verifyLoading, setVerifyLoading] = useState(false);
   const [countdown, setCountdown]         = useState(3);
   const [launchPasswordSet, setLaunchPasswordSet] = useState(false);
+  // Code de confirmation saisi : gardé jusqu'à l'envoi (le serveur le revérifie à la création), jamais persisté
+  const launchPwdRef = useRef('');
 
   function startCountdown() {
     setCountdown(3);
@@ -458,11 +462,12 @@ export default function NewOnboarding() {
     setVerifyLoading(true);
     try {
       await api.post('/api/auth/verify-launch-password', { password: verifyPwd });
+      launchPwdRef.current = verifyPwd;
       setVerifyPwd('');
       setVerifyLoading(false);
       startCountdown();
     } catch (e) {
-      setVerifyError(e.message || 'Mot de passe incorrect');
+      setVerifyError(e.message || 'Code de confirmation incorrect');
       setVerifyLoading(false);
     }
   }
@@ -485,8 +490,9 @@ export default function NewOnboarding() {
       setPointageCommAssign((data.pointage_comm_assignments || []).filter(g => g.id && g.department && g.location));
       if (Array.isArray(data.locations) && data.locations.length > 0) setLocations(data.locations);
       if (data.force_change_password !== undefined) setForceChangePwd(data.force_change_password === 'true');
-      setLaunchPasswordSet(!!data.launch_password_set);
     }).catch(() => {});
+    // /api/auth/me est lisible par tous : le code de confirmation est demandé aux opérateurs comme aux administrateurs
+    api.get('/api/auth/me').then(data => setLaunchPasswordSet(!!data.launchPasswordSet)).catch(() => {});
   }, []);
 
   // Auto-fill email local part (prenom.nom) depuis prénom / nom.
@@ -609,6 +615,7 @@ export default function NewOnboarding() {
         groupName:   selectedGroup.displayName,
         skuId:       selectedLicense.skuId,
         licenseName: selectedLicense.displayName,
+        launchPassword: launchPwdRef.current || undefined,
       });
       setOnboardingId(id);
       setOnboarding({
@@ -618,7 +625,9 @@ export default function NewOnboarding() {
       setStep(4);
     } catch (err) {
       setError(err.message);
+      setLaunchState('idle');
     } finally {
+      launchPwdRef.current = '';
       setLoading(false);
     }
   }
@@ -1226,7 +1235,7 @@ export default function NewOnboarding() {
             <div style={{ background: 'var(--surface2)', borderRadius: 8, padding: '14px 16px', marginTop: 8 }}>
               <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                Confirmez votre mot de passe pour lancer l'onboarding
+                Saisissez le code de confirmation IT pour lancer l'onboarding
               </div>
               {verifyError && (
                 <div style={{ marginBottom: 10, padding: '8px 12px', background: 'rgba(239,68,68,.12)', border: '1px solid rgba(239,68,68,.3)', borderRadius: 6, fontSize: 13, color: 'var(--danger)' }}>
@@ -1237,7 +1246,9 @@ export default function NewOnboarding() {
                 type="password"
                 value={verifyPwd}
                 onChange={e => setVerifyPwd(e.target.value)}
-                placeholder="Votre mot de passe"
+                aria-label="Code de confirmation IT"
+                placeholder="Code de confirmation IT"
+                autoComplete="off"
                 autoFocus
                 onKeyDown={e => e.key === 'Enter' && !verifyLoading && verifyPwd && handleLaunch()}
               />
